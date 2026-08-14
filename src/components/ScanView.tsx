@@ -150,6 +150,10 @@ export const ScanView: React.FC<ScanViewProps> = ({
       const isUserAllergen = Boolean(matchedId && userProfile.allergens[matchedId]);
       const userSeverity = isUserAllergen ? userProfile.allergens[matchedId] : undefined;
 
+      // A real camera/upload scan that fell back to a random canned result (Gemini unavailable)
+      // did NOT actually analyze the user's photo — this must be disclosed, not shown as a real match.
+      const isSimulatedResult = !presetOverride && resData.source === 'local-heuristic';
+
       const newScanResult: ScanResult = {
         id: 'scan_' + Date.now(),
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' Today',
@@ -164,6 +168,7 @@ export const ScanView: React.FC<ScanViewProps> = ({
         details: scanData.details || 'Botanical sample analyzed for environmental allergen risk.',
         identifyingFeatures: scanData.identifyingFeatures || ['Distinctive foliage', 'Reproductive floral structure'],
         locationStr: `${userProfile.location.cityName}, ${userProfile.location.region.split(',')[0]}`,
+        isSimulatedResult,
       };
 
       setCurrentResult(newScanResult);
@@ -336,7 +341,18 @@ export const ScanView: React.FC<ScanViewProps> = ({
             
             {currentResult ? (
               <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-lg space-y-5 animate-in fade-in duration-200">
-                
+
+                {/* SIMULATED RESULT DISCLOSURE */}
+                {currentResult.isSimulatedResult && (
+                  <div className="p-4 rounded-2xl border-2 border-dashed border-amber-400 bg-amber-50 flex items-start gap-3">
+                    <XCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                    <div className="text-xs text-amber-900">
+                      <span className="font-black block">AI Vision Unavailable — Example Result Shown</span>
+                      <span>Gemini could not analyze your photo right now, so this is a placeholder example, not a real identification of your image. Try again shortly.</span>
+                    </div>
+                  </div>
+                )}
+
                 {/* MATCH BANNER ALERT */}
                 <div className={`p-4 rounded-2xl border flex items-start gap-3.5 ${
                   currentResult.isUserAllergen

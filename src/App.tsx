@@ -137,6 +137,12 @@ export default function App() {
     }
   };
 
+  // Shot due count for nav badge
+  const dueShotsCount =
+    schedule.enabled && schedule.nextShotDate && new Date(schedule.nextShotDate) <= new Date()
+      ? 1
+      : 0;
+
   // Notification actions
   const unreadNotifCount = notifications.filter((n) => !n.read).length;
   const handleMarkAllRead = () => {
@@ -167,7 +173,7 @@ export default function App() {
       <Navigation
         activeTab={activeTab}
         onTabChange={setActiveTab}
-        dueShotsCount={0}
+        dueShotsCount={dueShotsCount}
       />
 
       {/* Main Container */}
