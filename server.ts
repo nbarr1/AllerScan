@@ -267,6 +267,19 @@ app.get("/api/pollen-aqi", async (req, res) => {
     }
   }
 
+  // Metadata (display name + category) for user-added custom allergens, which have no
+  // entry in the built-in allergen database and so can't be resolved by ID alone.
+  const customAllergensJson = req.query.customAllergens as string;
+  let customAllergens: Record<string, { name: string; category: 'tree' | 'grass' | 'weed' | 'mold' | 'indoor' }> = {};
+
+  if (customAllergensJson) {
+    try {
+      customAllergens = JSON.parse(customAllergensJson);
+    } catch {
+      // ignore parse error
+    }
+  }
+
   try {
     // If lat/lng not provided or NaN, geocode via Photon with fast timeout
     if (isNaN(lat) || isNaN(lng)) {
@@ -508,6 +521,22 @@ app.get("/api/pollen-aqi", async (req, res) => {
       pet_dander_cat: { name: 'Cat Dander', cat: 'indoor' },
       pet_dander_dog: { name: 'Dog Dander', cat: 'indoor' },
     };
+
+    // Custom user-added allergens aren't in the built-in database above, so they have no
+    // known species-level pollen reading. Approximate them using their chosen category's
+    // aggregate index (tree/grass/weed/mold), matching how indoor triggers are handled.
+    const categoryLevelMap: Record<'tree' | 'grass' | 'weed' | 'mold' | 'indoor', { val: number; level: 'Low' | 'Moderate' | 'High' | 'Very High' }> = {
+      tree: { val: treeVal, level: pollenData.tree.level },
+      grass: { val: grassVal, level: pollenData.grass.level },
+      weed: { val: weedVal, level: pollenData.weed.level },
+      mold: { val: moldVal, level: pollenData.mold.level },
+      indoor: { val: 35, level: 'Moderate' },
+    };
+
+    Object.entries(customAllergens).forEach(([algId, meta]) => {
+      allergenCategoryMap[algId] = categoryLevelMap[meta.category] || categoryLevelMap.indoor;
+      allergenNames[algId] = { name: meta.name, cat: meta.category };
+    });
 
     Object.entries(userAllergens).forEach(([algId, severity]) => {
       const match = allergenCategoryMap[algId];

@@ -12,7 +12,7 @@ import { OnboardingModal } from './components/OnboardingModal';
 import { NotificationDrawer } from './components/NotificationDrawer';
 import { StorageService, DEFAULT_PROFILE, DEFAULT_SCHEDULE, DEFAULT_SETTINGS, INITIAL_NOTIFICATIONS, INITIAL_SYMPTOMS, INITIAL_SCANS } from './utils/storage';
 import { generateFallbackEnvData } from './utils/fallbackData';
-import { UserAllergenProfile, ImmunotherapySchedule, SymptomLog, ScanResult, NotificationSettings, AppNotification, EnvironmentalData, SeverityLevel } from './types';
+import { UserAllergenProfile, ImmunotherapySchedule, SymptomLog, ScanResult, NotificationSettings, AppNotification, EnvironmentalData, SeverityLevel, CustomAllergenMeta } from './types';
 import { ShieldAlert, AlertCircle } from 'lucide-react';
 
 export default function App() {
@@ -31,7 +31,13 @@ export default function App() {
   const [isEnvLoading, setIsEnvLoading] = useState(false);
 
   // Fetch real-time environmental pollen & AQI data from Express backend with safe timeout & instant fallback
-  const fetchEnvironmentalData = useCallback(async (locationStr: string, allergensMap: Record<string, SeverityLevel>, lat?: number, lng?: number) => {
+  const fetchEnvironmentalData = useCallback(async (
+    locationStr: string,
+    allergensMap: Record<string, SeverityLevel>,
+    lat?: number,
+    lng?: number,
+    customAllergens?: Record<string, CustomAllergenMeta>
+  ) => {
     setIsEnvLoading(true);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 4000);
@@ -40,6 +46,9 @@ export default function App() {
       let url = `/api/pollen-aqi?locationName=${encodeURIComponent(locationStr)}&userAllergens=${encodeURIComponent(JSON.stringify(allergensMap))}`;
       if (lat !== undefined && lng !== undefined) {
         url += `&lat=${lat}&lng=${lng}`;
+      }
+      if (customAllergens && Object.keys(customAllergens).length > 0) {
+        url += `&customAllergens=${encodeURIComponent(JSON.stringify(customAllergens))}`;
       }
       const resp = await fetch(url, { signal: controller.signal });
       if (!resp.ok) {
@@ -54,7 +63,7 @@ export default function App() {
     } catch (err) {
       console.warn('Network notice when loading live environmental data, using atmospheric model fallback:', err);
       // Seamlessly generate accurate atmospheric fallback so the dashboard is immediately interactive
-      const fallback = generateFallbackEnvData(locationStr, allergensMap, lat, lng);
+      const fallback = generateFallbackEnvData(locationStr, allergensMap, lat, lng, customAllergens);
       setEnvData(fallback);
     } finally {
       clearTimeout(timer);
@@ -64,8 +73,8 @@ export default function App() {
 
   useEffect(() => {
     const locStr = `${userProfile.location.cityName}, ${userProfile.location.region}`;
-    fetchEnvironmentalData(locStr, userProfile.allergens, userProfile.location.lat, userProfile.location.lng);
-  }, [userProfile.location.cityName, userProfile.location.region, userProfile.location.lat, userProfile.location.lng, userProfile.allergens, fetchEnvironmentalData]);
+    fetchEnvironmentalData(locStr, userProfile.allergens, userProfile.location.lat, userProfile.location.lng, userProfile.customAllergens);
+  }, [userProfile.location.cityName, userProfile.location.region, userProfile.location.lat, userProfile.location.lng, userProfile.allergens, userProfile.customAllergens, fetchEnvironmentalData]);
 
   // Update profile
   const handleUpdateProfile = (updated: UserAllergenProfile) => {
@@ -192,7 +201,8 @@ export default function App() {
                 `${userProfile.location.cityName}, ${userProfile.location.region}`,
                 userProfile.allergens,
                 userProfile.location.lat,
-                userProfile.location.lng
+                userProfile.location.lng,
+                userProfile.customAllergens
               )
             }
           />
