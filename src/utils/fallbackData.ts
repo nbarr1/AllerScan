@@ -1,10 +1,11 @@
-import { EnvironmentalData, SeverityLevel } from '../types';
+import { EnvironmentalData, SeverityLevel, CustomAllergenMeta } from '../types';
 
 export function generateFallbackEnvData(
   locationName: string,
   userAllergens: Record<string, SeverityLevel> = {},
   lat = 30.2672,
-  lng = -97.7431
+  lng = -97.7431,
+  customAllergens: Record<string, CustomAllergenMeta> = {}
 ): EnvironmentalData {
   // Deterministic calculation based on latitude/longitude and user allergens
   const now = new Date();
@@ -50,6 +51,21 @@ export function generateFallbackEnvData(
     pet_dander_cat: { val: 40, level: 'Moderate', name: 'Cat Dander', cat: 'indoor' },
     pet_dander_dog: { val: 40, level: 'Moderate', name: 'Dog Dander', cat: 'indoor' },
   };
+
+  // Custom user-added allergens have no species-level reading; approximate them using
+  // their chosen category's aggregate index, same as the live /api/pollen-aqi endpoint.
+  const categoryLevelMap: Record<'tree' | 'grass' | 'weed' | 'mold' | 'indoor', { val: number; level: 'Low' | 'Moderate' | 'High' | 'Very High' }> = {
+    tree: { val: rawTree, level: getPollenLevel(rawTree) },
+    grass: { val: rawGrass, level: getPollenLevel(rawGrass) },
+    weed: { val: rawWeed, level: getPollenLevel(rawWeed) },
+    mold: { val: rawMold, level: getPollenLevel(rawMold) },
+    indoor: { val: 35, level: 'Moderate' },
+  };
+
+  Object.entries(customAllergens).forEach(([algId, meta]) => {
+    const catVal = categoryLevelMap[meta.category] || categoryLevelMap.indoor;
+    allergenCategoryMap[algId] = { ...catVal, name: meta.name, cat: meta.category };
+  });
 
   const matchedActiveAllergens: Array<{
     id: string;

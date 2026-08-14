@@ -13,7 +13,7 @@ import {
   Download
 } from 'lucide-react';
 import { MASTER_ALLERGENS, ALLERGEN_CATEGORIES } from '../data/allergensDatabase';
-import { UserAllergenProfile, SeverityLevel, AllergenCategory } from '../types';
+import { UserAllergenProfile, SeverityLevel, AllergenCategory, CustomAllergenMeta } from '../types';
 
 interface ProfileViewProps {
   userProfile: UserAllergenProfile;
@@ -53,10 +53,24 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
 
   const handleAddCustom = () => {
     if (!customName.trim()) return;
-    const cleanId = 'custom_' + customName.toLowerCase().replace(/\s+/g, '_');
-    const copy = { ...userProfile.allergens, [cleanId]: 'moderate' as SeverityLevel };
-    onUpdateProfile({ ...userProfile, allergens: copy });
+    const cleanId = 'custom_' + customName.toLowerCase().trim().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '');
+    if (!cleanId || cleanId === 'custom_') return;
+
+    const allergensCopy = { ...userProfile.allergens, [cleanId]: 'moderate' as SeverityLevel };
+    const customCopy: Record<string, CustomAllergenMeta> = {
+      ...(userProfile.customAllergens || {}),
+      [cleanId]: { name: customName.trim(), category: customCat },
+    };
+    onUpdateProfile({ ...userProfile, allergens: allergensCopy, customAllergens: customCopy });
     setCustomName('');
+  };
+
+  const handleRemoveCustom = (id: string) => {
+    const allergensCopy = { ...userProfile.allergens };
+    delete allergensCopy[id];
+    const customCopy = { ...(userProfile.customAllergens || {}) };
+    delete customCopy[id];
+    onUpdateProfile({ ...userProfile, allergens: allergensCopy, customAllergens: customCopy });
   };
 
   const exportProfileJson = () => {
@@ -69,9 +83,11 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     downloadAnchor.remove();
   };
 
+  const customAllergenEntries: [string, CustomAllergenMeta][] = Object.entries(userProfile.customAllergens || {});
+
   return (
     <div className="space-y-6 pb-20 md:pb-8">
-      
+
       {/* Title & Export */}
       <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-xs flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
@@ -179,11 +195,80 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
         })}
       </div>
 
+      {/* MY CUSTOM TRIGGERS */}
+      {customAllergenEntries.length > 0 && (
+        <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-xs space-y-3">
+          <h3 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
+            <Sliders className="w-4 h-4 text-emerald-600" /> My Custom Triggers
+          </h3>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {customAllergenEntries.map(([id, meta]) => {
+              const currentSev = userProfile.allergens[id] || 'moderate';
+              const CatIcon = categoryIcons[meta.category];
+
+              return (
+                <div
+                  key={id}
+                  className="p-4 rounded-3xl border border-emerald-400 bg-white shadow-sm ring-1 ring-emerald-400/20"
+                >
+                  <div className="flex justify-between items-start mb-2">
+                    <div>
+                      <h3 className="text-sm font-extrabold text-slate-900 flex items-center gap-1.5">
+                        <CatIcon className="w-3.5 h-3.5 text-emerald-600" />
+                        {meta.name}
+                      </h3>
+                      <p className="text-[11px] text-slate-400 italic capitalize">Custom {meta.category} trigger</p>
+                    </div>
+
+                    <button
+                      onClick={() => handleRemoveCustom(id)}
+                      className="p-1.5 text-rose-500 hover:bg-rose-50 rounded-lg border border-rose-200 transition-colors"
+                      title="Remove custom trigger"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+
+                  <div className="pt-3 border-t border-slate-100 space-y-2">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+                      Assigned Severity Urgency:
+                    </span>
+                    <div className="grid grid-cols-3 gap-1.5">
+                      {(['mild', 'moderate', 'severe'] as SeverityLevel[]).map((sev) => (
+                        <button
+                          key={sev}
+                          onClick={() => handleSeverityChange(id, sev)}
+                          className={`py-1 text-xs font-bold capitalize rounded-lg border transition-all ${
+                            currentSev === sev
+                              ? sev === 'severe'
+                                ? 'bg-rose-600 border-rose-600 text-white'
+                                : sev === 'moderate'
+                                ? 'bg-amber-500 border-amber-500 text-white'
+                                : 'bg-emerald-600 border-emerald-600 text-white'
+                              : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
+                          }`}
+                        >
+                          {sev}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* CUSTOM ALLERGEN ENTRY FORM */}
       <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-xs space-y-3">
         <h3 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
           <Plus className="w-4 h-4 text-emerald-600" /> Add Custom Environmental Trigger
         </h3>
+        <p className="text-[11px] text-slate-400 -mt-2">
+          Custom triggers are estimated using their category's regional pollen index (e.g. a custom tree trigger uses the local tree pollen level) since AllerScan has no species-specific data for them.
+        </p>
 
         <div className="flex flex-col sm:flex-row gap-2">
           <input

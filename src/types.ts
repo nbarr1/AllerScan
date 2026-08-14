@@ -16,8 +16,16 @@ export interface AllergenItem {
   severity?: SeverityLevel;
 }
 
+export interface CustomAllergenMeta {
+  name: string;
+  category: AllergenCategory;
+}
+
 export interface UserAllergenProfile {
   allergens: Record<string, SeverityLevel>; // allergenId -> severity
+  // Display name + category for allergen IDs not present in the built-in MASTER_ALLERGENS
+  // database (i.e. user-added custom triggers). Required to match and score them.
+  customAllergens?: Record<string, CustomAllergenMeta>;
   location: {
     cityName: string;
     region: string;
