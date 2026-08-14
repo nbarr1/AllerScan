@@ -2,6 +2,7 @@ import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
+import { DEFAULT_CITY_OPTIONS } from "./src/data/defaultCities";
 
 const app = express();
 const PORT = 3000;
@@ -683,17 +684,7 @@ app.get("/api/location-search", async (req, res) => {
   const query = (req.query.q as string || "").trim();
   
   if (!query) {
-    const defaultCities = [
-      { cityName: "Austin", region: "Texas, USA", lat: 30.2672, lng: -97.7431 },
-      { cityName: "New York", region: "New York, USA", lat: 40.7128, lng: -74.0060 },
-      { cityName: "Los Angeles", region: "California, USA", lat: 34.0522, lng: -118.2437 },
-      { cityName: "Chicago", region: "Illinois, USA", lat: 41.8781, lng: -87.6298 },
-      { cityName: "Miami", region: "Florida, USA", lat: 25.7617, lng: -80.1918 },
-      { cityName: "Denver", region: "Colorado, USA", lat: 39.7392, lng: -104.9903 },
-      { cityName: "Seattle", region: "Washington, USA", lat: 47.6062, lng: -122.3321 },
-      { cityName: "London", region: "United Kingdom", lat: 51.5074, lng: -0.1278 },
-    ];
-    return res.json(defaultCities);
+    return res.json(DEFAULT_CITY_OPTIONS);
   }
 
   try {
@@ -755,18 +746,8 @@ app.get("/api/location-search", async (req, res) => {
   }
 
   // 3. Static fallback
-  const presetCities = [
-    { cityName: "Austin", region: "Texas, USA", lat: 30.2672, lng: -97.7431 },
-    { cityName: "New York", region: "New York, USA", lat: 40.7128, lng: -74.0060 },
-    { cityName: "Los Angeles", region: "California, USA", lat: 34.0522, lng: -118.2437 },
-    { cityName: "Chicago", region: "Illinois, USA", lat: 41.8781, lng: -87.6298 },
-    { cityName: "Miami", region: "Florida, USA", lat: 25.7617, lng: -80.1918 },
-    { cityName: "Denver", region: "Colorado, USA", lat: 39.7392, lng: -104.9903 },
-    { cityName: "Seattle", region: "Washington, USA", lat: 47.6062, lng: -122.3321 },
-    { cityName: "London", region: "United Kingdom", lat: 51.5074, lng: -0.1278 },
-  ];
-  const filtered = presetCities.filter(c => c.cityName.toLowerCase().includes(query.toLowerCase()));
-  res.json(filtered.length > 0 ? filtered : presetCities.slice(0, 4));
+  const filtered = DEFAULT_CITY_OPTIONS.filter(c => c.cityName.toLowerCase().includes(query.toLowerCase()));
+  res.json(filtered.length > 0 ? filtered : DEFAULT_CITY_OPTIONS.slice(0, 4));
 });
 
 // 4. Pollen Hotspots & Micro-climate Stations endpoint.

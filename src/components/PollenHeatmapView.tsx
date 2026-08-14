@@ -188,6 +188,10 @@ export const PollenHeatmapView: React.FC<PollenHeatmapViewProps> = ({
   const [selectedHotspot, setSelectedHotspot] = useState<PollenHotspot | null>(null);
   const [selectedPlace, setSelectedPlace] = useState<google.maps.places.Place | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  // Tracks whether the currently displayed hotspots came from the live server endpoint
+  // or the local fallback (server unreachable/timed out) so the UI can disclose it honestly.
+  const [isFallbackData, setIsFallbackData] = useState<boolean>(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
 
   // Filters & Modes
   const [activeCategoryFilter, setActiveCategoryFilter] = useState<'all' | 'tree' | 'grass' | 'weed' | 'mold'>('all');
@@ -215,6 +219,7 @@ export const PollenHeatmapView: React.FC<PollenHeatmapViewProps> = ({
   // Fetch hotspots from server API
   const fetchHotspots = useCallback(async (lat: number, lng: number, locName: string) => {
     setIsLoading(true);
+    setFetchError(null);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 4000);
 
@@ -231,9 +236,14 @@ export const PollenHeatmapView: React.FC<PollenHeatmapViewProps> = ({
       if (data.hotspots && data.hotspots.length > 0) {
         setHotspots(data.hotspots);
         setSelectedHotspot(data.hotspots[0]);
+        setIsFallbackData(false);
+      } else {
+        throw new Error('Server returned no hotspot data');
       }
     } catch (err) {
       console.warn('Notice loading live hotspots, using local terrain telemetry fallback:', err);
+      setFetchError(err instanceof Error ? err.message : 'Unknown error contacting hotspot service');
+      setIsFallbackData(true);
       const fallbackList: PollenHotspot[] = [
         {
           id: 'hs_fb_1',
@@ -622,6 +632,20 @@ export const PollenHeatmapView: React.FC<PollenHeatmapViewProps> = ({
             </button>
           </div>
         </div>
+
+        {/* FALLBACK DATA DISCLOSURE BANNER */}
+        {isFallbackData && !isLoading && (
+          <div className="p-3.5 bg-amber-50 border border-amber-300 rounded-2xl flex items-start gap-3">
+            <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+            <div className="text-xs text-amber-900">
+              <span className="font-bold block">Hotspot service unavailable — showing a local modeled estimate</span>
+              <span>
+                {fetchError ? `(${fetchError}) ` : ''}
+                Zones below use fixed illustrative locations, not live sensor data. Try the refresh button to reconnect.
+              </span>
+            </div>
+          </div>
+        )}
 
         {/* ACTIVE ROUTE BANNER (Routes API) */}
         {activeRouteDestination && (
