@@ -104,6 +104,7 @@ export interface ScanResult {
   details: string;
   identifyingFeatures: string[];
   locationStr: string;
+  isSimulatedResult?: boolean; // true when Gemini vision was unavailable and a fallback example was returned instead of real analysis
 }
 
 export interface ShotLog {

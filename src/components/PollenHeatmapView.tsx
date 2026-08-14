@@ -1013,8 +1013,8 @@ export const PollenHeatmapView: React.FC<PollenHeatmapViewProps> = ({
             {/* NEARBY STATIONS DIRECTORY */}
             <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-xs space-y-3">
               <h3 className="text-xs font-black uppercase tracking-wider text-slate-400 flex items-center justify-between">
-                <span>Nearby Stations ({hotspots.length})</span>
-                <span className="text-[10px] text-emerald-600 font-bold">Live Sensor Feed</span>
+                <span>Nearby Zones ({hotspots.length})</span>
+                <span className="text-[10px] text-emerald-600 font-bold" title="Fixed illustrative zones scaled by live wind, humidity & AQI data">Modeled Estimate</span>
               </h3>
 
               <div className="space-y-2 max-h-[260px] overflow-y-auto pr-1">

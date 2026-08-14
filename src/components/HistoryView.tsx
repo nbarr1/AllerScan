@@ -3,14 +3,7 @@ import {
   Activity,
   Plus,
   TrendingUp,
-  Calendar,
-  CheckCircle2,
-  Sparkles,
-  Info,
-  Smile,
-  Meh,
-  Frown,
-  AlertCircle
+  Calendar
 } from 'lucide-react';
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, Legend } from 'recharts';
 import { SymptomLog } from '../types';
@@ -55,7 +48,6 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
   const chartData = [...symptomLogs].reverse().map((log) => ({
     date: log.date.split('-').slice(1).join('/'),
     'Your Symptom Severity': log.severityScore * 25, // Scale 0-4 to 0-100
-    'Pollen Risk Index': 40 + Math.floor(Math.sin(log.severityScore) * 30 + (log.severityScore * 12)),
   }));
 
   return (
@@ -85,34 +77,29 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
       {/* TREND GRAPH: RECHARTS */}
       <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-xs space-y-4">
         <h2 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
-          <TrendingUp className="w-4 h-4 text-emerald-600" /> Symptom vs Pollen Risk Trend (Last 7 Logs)
+          <TrendingUp className="w-4 h-4 text-emerald-600" /> Your Logged Symptom Severity Trend
         </h2>
 
-        <div className="h-64 w-full pt-2">
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-              <XAxis dataKey="date" tick={{ fontSize: 11, fill: '#64748b' }} />
-              <YAxis domain={[0, 100]} tick={{ fontSize: 11, fill: '#64748b' }} />
-              <Tooltip
-                contentStyle={{ backgroundColor: '#0f172a', borderRadius: '12px', border: 'none', color: '#fff', fontSize: '12px' }}
-              />
-              <Legend wrapperStyle={{ fontSize: '12px', paddingTop: '10px' }} />
-              <Line type="monotone" dataKey="Your Symptom Severity" stroke="#f43f5e" strokeWidth={3} dot={{ r: 5 }} />
-              <Line type="monotone" dataKey="Pollen Risk Index" stroke="#10b981" strokeWidth={3} dot={{ r: 5 }} />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
-
-      {/* AI CORRELATION INSIGHT CARDS */}
-      <div className="p-5 bg-gradient-to-br from-slate-900 to-slate-800 text-white rounded-3xl shadow-md space-y-3">
-        <div className="flex items-center gap-2 text-emerald-400 font-extrabold text-sm">
-          <Sparkles className="w-4 h-4" /> Personal Correlation Summary
-        </div>
-        <p className="text-xs text-slate-300 leading-relaxed">
-          Based on your logged entries, your symptom severity scores (sneezing, congestion) peak on days when <strong>Weed (Ragweed)</strong> and <strong>Oak Tree</strong> pollen indices cross 50/100.
-        </p>
+        {chartData.length > 0 ? (
+          <div className="h-64 w-full pt-2">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                <XAxis dataKey="date" tick={{ fontSize: 11, fill: '#64748b' }} />
+                <YAxis domain={[0, 100]} tick={{ fontSize: 11, fill: '#64748b' }} />
+                <Tooltip
+                  contentStyle={{ backgroundColor: '#0f172a', borderRadius: '12px', border: 'none', color: '#fff', fontSize: '12px' }}
+                />
+                <Legend wrapperStyle={{ fontSize: '12px', paddingTop: '10px' }} />
+                <Line type="monotone" dataKey="Your Symptom Severity" stroke="#f43f5e" strokeWidth={3} dot={{ r: 5 }} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        ) : (
+          <div className="py-10 text-center text-xs text-slate-400">
+            Log your first symptom entry to start seeing your severity trend here.
+          </div>
+        )}
       </div>
 
       {/* LOG HISTORY TIMELINE */}
@@ -120,6 +107,12 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
         <h2 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
           <Calendar className="w-4 h-4 text-slate-600" /> Daily Symptom Journal Entries ({symptomLogs.length})
         </h2>
+
+        {symptomLogs.length === 0 && (
+          <div className="py-8 text-center text-xs text-slate-400">
+            No symptom entries logged yet. Use "1-Tap Log Today's Symptoms" above to get started.
+          </div>
+        )}
 
         <div className="space-y-3">
           {symptomLogs.map((log) => (

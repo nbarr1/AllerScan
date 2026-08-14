@@ -88,6 +88,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   };
 
   const colorConfig = getGaugeColor(overallPersonalRiskScore);
+  const isLiveWeatherSource = Boolean(dataSource && dataSource.toLowerCase().includes('live'));
 
   // Shot countdown calculation
   const getDaysUntilNextShot = () => {
@@ -396,7 +397,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </div>
               <div>
                 <div className="text-xs font-extrabold text-slate-300 uppercase tracking-wider">
-                  Live Microclimate Feed
+                  {isLiveWeatherSource ? 'Live Microclimate Feed' : 'Estimated Microclimate'}
                 </div>
                 <div className="text-sm font-bold text-white flex items-center gap-2">
                   <span>{weather.weatherDescription}</span>
@@ -414,9 +415,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 <Wind className="w-4 h-4 text-teal-400" />
                 <span>Wind: <strong className="text-white">{weather.windSpeedMph} mph</strong> {weather.windDirection}</span>
               </div>
-              <div className="text-[11px] px-2 py-0.5 rounded-md bg-white/10 text-slate-300 border border-white/10">
-                Open-Meteo v1
-              </div>
+              {isLiveWeatherSource && (
+                <div className="text-[11px] px-2 py-0.5 rounded-md bg-white/10 text-slate-300 border border-white/10">
+                  Open-Meteo v1
+                </div>
+              )}
             </div>
           </div>
         )}

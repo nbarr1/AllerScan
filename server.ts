@@ -769,7 +769,9 @@ app.get("/api/location-search", async (req, res) => {
   res.json(filtered.length > 0 ? filtered : presetCities.slice(0, 4));
 });
 
-// 4. Pollen Hotspots & Micro-climate Stations endpoint driven by LIVE telemetry
+// 4. Pollen Hotspots & Micro-climate Stations endpoint.
+// NOTE: Station locations/names below are a fixed illustrative layout, NOT a real sensor network.
+// Only the wind/humidity/AQI multipliers applied to them come from live Open-Meteo data.
 app.get("/api/pollen-hotspots", async (req, res) => {
   try {
     const centerLat = parseFloat(req.query.lat as string) || 30.2672;
@@ -919,7 +921,7 @@ app.get("/api/pollen-hotspots", async (req, res) => {
         advisory: `Elevated ridge exposure with live winds (${liveWeather.windMph} mph) carrying cedar allergen plumes.`,
       },
       {
-        nameSuffix: "Southwest Environmental Air Station #4",
+        nameSuffix: "Southwest Modeled Air Zone",
         type: "sensor_station" as const,
         dLat: -0.032,
         dLng: -0.015,
@@ -928,7 +930,7 @@ app.get("/api/pollen-hotspots", async (req, res) => {
         algId: "birch",
         baseScore: 56,
         grainsBase: 270,
-        advisory: "Calibrated volumetric air telemetry station reporting live particle concentration.",
+        advisory: "Modeled estimate for this zone based on current wind and humidity conditions.",
       },
       {
         nameSuffix: "Northeast Industrial Corridor & Hub",
