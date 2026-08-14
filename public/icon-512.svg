@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#064e3b" />
+      <stop offset="50%" stop-color="#047857" />
+      <stop offset="100%" stop-color="#0f172a" />
+    </linearGradient>
+    <linearGradient id="shieldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#34d399" />
+      <stop offset="100%" stop-color="#059669" />
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bgGrad)" />
+  <path d="M256 96 C336 96 400 136 400 240 C400 352 288 416 256 428 C224 416 112 352 112 240 C112 136 176 96 256 96 Z" fill="none" stroke="url(#shieldGrad)" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Leaf icon inside shield -->
+  <path d="M256 160 C210 190 190 240 205 295 C220 350 256 360 256 360 C256 360 292 350 307 295 C322 240 302 190 256 160 Z" fill="#10b981" opacity="0.9" />
+  <path d="M256 180 L256 345" stroke="#ecfdf5" stroke-width="12" stroke-linecap="round"/>
+  <path d="M256 240 Q285 220 295 210" stroke="#ecfdf5" stroke-width="8" stroke-linecap="round"/>
+  <path d="M256 270 Q225 250 215 240" stroke="#ecfdf5" stroke-width="8" stroke-linecap="round"/>
+  <!-- AI Scan Dots -->
+  <circle cx="150" cy="180" r="10" fill="#34d399" />
+  <circle cx="362" cy="180" r="10" fill="#34d399" />
+  <circle cx="170" cy="360" r="8" fill="#34d399" opacity="0.8" />
+  <circle cx="342" cy="360" r="8" fill="#34d399" opacity="0.8" />
+</svg>

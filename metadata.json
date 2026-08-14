@@ -1,0 +1,11 @@
+{
+  "name": "AllerScan",
+  "description": "Personal Allergen Scanner & Air Quality Tracker with AI Plant Scanning, Pollen AQI Radar, and Immunotherapy Shot Reminders.",
+  "requestFramePermissions": [
+    "camera",
+    "geolocation"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
