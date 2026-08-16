@@ -47,8 +47,9 @@ interface PollenHeatmapViewProps {
   onUpdateLocation?: (locStr: string, lat: number, lng: number) => void;
 }
 
+// Injected at runtime by the Express server (see server.ts) so the key can be rotated
+// without a rebuild, rather than baked into the client bundle at build time.
 const GOOGLE_MAPS_API_KEY =
-  process.env.GOOGLE_MAPS_PLATFORM_KEY ||
   (import.meta as any).env?.VITE_GOOGLE_MAPS_PLATFORM_KEY ||
   (globalThis as any).GOOGLE_MAPS_PLATFORM_KEY ||
   '';

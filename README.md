@@ -62,11 +62,13 @@ Copy `.env.example` to `.env` and fill in what you need. All are optional — om
 | Variable | Required for | Notes |
 |---|---|---|
 | `GEMINI_API_KEY` | Real AI plant/mold scanning | Without it, `/api/scan` returns a labeled example result instead of analyzing your photo |
-| `GOOGLE_MAPS_PLATFORM_KEY` | The Pollen Heatmap tab | Without it, that tab shows setup instructions instead of the map |
+| `GOOGLE_MAPS_PLATFORM_KEY` | The Pollen Heatmap tab | Without it, that tab shows setup instructions instead of the map. Unlike the other keys, this one is a browser-facing Maps JS API key — see note below |
 | `GOOGLE_POLLEN_API_KEY` | Species-level Google Pollen forecasts | Without it, `/api/pollen-aqi` derives pollen index values from live Open-Meteo pollen/weather sensors instead |
 | `APP_URL` | Self-referential links when deployed | Not required for local development |
 
 This project originated in Google AI Studio, which can auto-inject `GEMINI_API_KEY` and `APP_URL` at runtime from its Secrets panel — see the comments in `.env.example`.
+
+`GEMINI_API_KEY` and `GOOGLE_POLLEN_API_KEY` are read only in `server.ts` and never sent to the client. `GOOGLE_MAPS_PLATFORM_KEY` is different: the Maps JS API it powers runs in the browser, so that key is necessarily visible client-side — there's no way to keep a Maps JS key secret. The server injects it into the HTML at request time (`injectRuntimeConfig` in `server.ts`) rather than baking it into the JS bundle at build time, so it can be rotated via env var / redeploy without a client rebuild. The actual protection for this key is on the Google Cloud side: restrict it (HTTP referrer for the web origin) and set a quota, so a copied key is low-value.
 
 ## Testing on a device
 
@@ -76,7 +78,7 @@ Because the frontend calls the API on the same origin it's served from, the simp
 2. **HTTPS tunnel (full feature testing):** `npm run dev`, then tunnel it (e.g. `ngrok http 3000`) — camera and geolocation require a secure (HTTPS) context, which a plain LAN IP doesn't satisfy.
 3. **A real deployment:** `npm run build && npm start` behind HTTPS. Since `manifest.json` and iOS meta tags are already in `index.html`, testers can "Add to Home Screen" for an app-like icon/splash without any native build.
 
-A native Android/iOS build via [Capacitor](https://capacitorjs.com/) is also possible — `capacitor.config.json` is present as a starting point, but the Capacitor packages themselves aren't installed yet. See `src/components/InstallAppModal.tsx` for the intended setup flow. Note that a Capacitor build still needs a reachable instance of this same Express server (e.g. via `server.url` in `capacitor.config.json`) — API keys stay server-side and are never bundled into the app.
+A native Android/iOS build via [Capacitor](https://capacitorjs.com/) is also possible — `@capacitor/core`, `/cli`, `/ios`, and `/android` are installed, and `capacitor.config.json` is present as a starting point. See `src/components/InstallAppModal.tsx` for the intended setup flow. Before running a native build, set `server.url` in `capacitor.config.json` to a reachable HTTPS instance of this same Express server (it's currently unset, which means `npx cap add ios|android` would bundle `dist/` locally instead). This matters beyond convenience: a locally-bundled WebView loads from a non-web origin (`capacitor://localhost` / `https://localhost`), which no HTTP-referrer restriction on `GOOGLE_MAPS_PLATFORM_KEY` can match — pointing at the real server origin is what makes that restriction meaningful. `GEMINI_API_KEY` and `GOOGLE_POLLEN_API_KEY` stay server-side either way.
 
 ## Project structure
 

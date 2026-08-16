@@ -1,4 +1,5 @@
 import express from "express";
+import fs from "fs";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
@@ -6,6 +7,15 @@ import { DEFAULT_CITY_OPTIONS } from "./src/data/defaultCities";
 
 const app = express();
 const PORT = 3000;
+
+// Injects the (public, referrer-restricted) Maps Platform key into the served HTML at
+// request time, so it can be rotated via env var / redeploy without a client rebuild,
+// and so it's never baked as a literal into the shipped JS bundle.
+function injectRuntimeConfig(html: string): string {
+  const mapsKey = process.env.GOOGLE_MAPS_PLATFORM_KEY || "";
+  const script = `<script>window.GOOGLE_MAPS_PLATFORM_KEY = ${JSON.stringify(mapsKey)};</script>`;
+  return html.replace("</head>", `${script}</head>`);
+}
 
 app.use(express.json({ limit: "25mb" }));
 
@@ -307,7 +317,7 @@ app.get("/api/pollen-aqi", async (req, res) => {
     }
 
     // Check for Google Pollen API Key in environment
-    const googlePollenKey = process.env.GOOGLE_POLLEN_API_KEY || process.env.GOOGLE_MAPS_API_KEY;
+    const googlePollenKey = process.env.GOOGLE_POLLEN_API_KEY;
     let googlePollenData: any = null;
 
     if (googlePollenKey) {
@@ -1028,16 +1038,34 @@ app.get("/api/pollen-hotspots", async (req, res) => {
 
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
+    // appType "custom" hands HTML serving to our own middleware below instead of Vite's
+    // built-in SPA fallback, so we can inject runtime config before sending it.
     const vite = await createViteServer({
       server: { middlewareMode: true },
-      appType: "spa",
+      appType: "custom",
     });
     app.use(vite.middlewares);
+    app.use(async (req, res, next) => {
+      try {
+        const templatePath = path.join(process.cwd(), "index.html");
+        let html = fs.readFileSync(templatePath, "utf-8");
+        html = await vite.transformIndexHtml(req.originalUrl, html);
+        html = injectRuntimeConfig(html);
+        res.status(200).set({ "Content-Type": "text/html" }).end(html);
+      } catch (err) {
+        vite.ssrFixStacktrace(err as Error);
+        next(err);
+      }
+    });
   } else {
     const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
+    // index: false so "/" and "index.html" fall through to the catch-all below instead of
+    // being served directly by static — otherwise the runtime config script never gets injected.
+    app.use(express.static(distPath, { index: false }));
     app.get("*", (req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
+      let html = fs.readFileSync(path.join(distPath, "index.html"), "utf-8");
+      html = injectRuntimeConfig(html);
+      res.status(200).set({ "Content-Type": "text/html" }).send(html);
     });
   }
 
