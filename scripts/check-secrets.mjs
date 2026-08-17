@@ -19,7 +19,7 @@ const SECRET_PATTERNS = [
 ];
 
 function stagedFiles() {
-  const out = execFileSync("git", ["diff", "--cached", "--name-only", "--diff-filter=ACM"], {
+  const out = execFileSync("git", ["diff", "--cached", "--name-only", "--diff-filter=ACMR"], {
     encoding: "utf-8",
   });
   return out.split("\n").map((l) => l.trim()).filter(Boolean);

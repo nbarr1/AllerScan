@@ -6,7 +6,7 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { DEFAULT_CITY_OPTIONS } from "./src/data/defaultCities";
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 // Injects the (public, referrer-restricted) Maps Platform key into the served HTML at
 // request time, so it can be rotated via env var / redeploy without a client rebuild,
