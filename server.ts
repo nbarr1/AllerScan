@@ -1,7 +1,6 @@
 import express from "express";
 import fs from "fs";
 import path from "path";
-import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import { DEFAULT_CITY_OPTIONS } from "./src/data/defaultCities.js";
 
@@ -1038,6 +1037,9 @@ app.get("/api/pollen-hotspots", async (req, res) => {
 
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
+    // Imported dynamically (not at module scope) so vite — and its rollup dependency, whose
+    // CJS entry eagerly requires a platform-native binary — is never touched in production.
+    const { createServer: createViteServer } = await import("vite");
     // appType "custom" hands HTML serving to our own middleware below instead of Vite's
     // built-in SPA fallback, so we can inject runtime config before sending it.
     const vite = await createViteServer({
