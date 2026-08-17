@@ -110,6 +110,14 @@ export function generateFallbackEnvData(
 
   const aqiVal = Math.round(35 + Math.abs(Math.sin(lat * 10)) * 30);
 
+  // This fallback runs entirely offline in the browser, so there's no way to look up the
+  // selected location's real time zone. Be honest about it: show the device's own local time
+  // (what Date/toLocaleTimeString already use by default) and label it as such, rather than
+  // silently implying it reflects the selected location.
+  const deviceTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const tzParts = new Intl.DateTimeFormat('en-US', { timeZoneName: 'short' }).formatToParts(now);
+  const timeZoneAbbr = tzParts.find((p) => p.type === 'timeZoneName')?.value || deviceTimeZone;
+
   const forecast = [];
   for (let i = 0; i < 5; i++) {
     const dateObj = new Date(Date.now() + i * 86400000);
@@ -137,7 +145,9 @@ export function generateFallbackEnvData(
 
   return {
     locationName: locationName.split(',')[0] || "Austin",
-    updatedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    updatedAt: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    timeZoneAbbr,
+    timeZoneNote: `Live time zone data for ${locationName.split(',')[0] || 'this location'} is unavailable right now — showing your device's local time (${deviceTimeZone}) instead.`,
     dataSource: "Seasonal Atmospheric Model",
     weather: {
       temperatureF: 76,

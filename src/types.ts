@@ -75,6 +75,12 @@ export interface LiveWeatherData {
 export interface EnvironmentalData {
   locationName: string;
   updatedAt: string;
+  // Short label for the time zone `updatedAt` is expressed in (e.g. "CDT", "JST", "UTC").
+  timeZoneAbbr?: string;
+  // Present only when the displayed time could not be confirmed to match the selected
+  // location's actual time zone (e.g. live geocoding/timezone lookup failed), so the UI
+  // can disclose exactly what time zone is being shown instead of silently mismatching.
+  timeZoneNote?: string;
   dataSource?: string;
   weather?: LiveWeatherData;
   overallPersonalRiskScore: number; // 0 - 100
@@ -178,12 +184,15 @@ export interface AppNotification {
 export interface PollenHotspot {
   id: string;
   name: string;
+  address?: string;
   type: 'park' | 'urban' | 'botanical' | 'suburban' | 'greenbelt' | 'sensor_station';
   lat: number;
   lng: number;
   overallRisk: 'Low' | 'Moderate' | 'High' | 'Very High';
   overallScore: number; // 0 - 100
-  pollenCountGrains: number; // grains/m3
+  // Real grains/m3 reading, only present when a live sensor actually reported one for the
+  // dominant category at this exact point — never a computed/illustrative estimate.
+  pollenCountGrains?: number;
   treePollen: number;
   grassPollen: number;
   weedPollen: number;
@@ -191,6 +200,9 @@ export interface PollenHotspot {
   aqi: number;
   dominantSpecies: string;
   dominantCategory: AllergenCategory;
+  // Where this location's pollen reading actually came from (e.g. "Live Google Maps Pollen
+  // API", "Live Open-Meteo Pollen Sensors", or a clearly-labeled seasonal model as last resort).
+  dataSource: string;
   isProfileMatch: boolean;
   matchedUserAllergen?: string;
   userSeverity?: SeverityLevel;
