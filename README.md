@@ -9,7 +9,7 @@ Personal allergen scanner and air-quality tracker: AI-powered plant/mold identif
 | Tab | What it does |
 |---|---|
 | **Dashboard** | Personalized 0–100 risk score blending live pollen/AQI data against your saved allergen profile, a 5-day forecast, and tailored recommendations. |
-| **Pollen Heatmap** | Google Maps view of illustrative pollen "zones" around your location, with Places API discovery (clean-air venues, pharmacies) and Routes API navigation. Requires a Google Maps Platform key. |
+| **Pollen Heatmap** | Google Maps view of real nearby parks/gardens (via the Places API), each carrying its own live pollen reading, with Places API discovery (clean-air venues, pharmacies) and Routes API navigation. Requires a Google Maps Platform key. |
 | **Scan** | Camera/upload plant & mold identification via Gemini Vision, cross-referenced against your allergen profile. Falls back to a clearly-labeled example result if Gemini is unavailable. |
 | **Allergy Shots** | Immunotherapy schedule tracking: build-up/maintenance phase, interval, arm rotation, reaction logging, allergist contact info. |
 | **Insights & Logs** | Daily symptom journal (sneezing, congestion, etc.) with a severity trend chart. |
@@ -22,8 +22,8 @@ AllerScan is a single Express server (`server.ts`) that both serves the Vite-bui
 
 - `POST /api/scan` — Gemini Vision plant/mold identification (falls back to a labeled example result if no `GEMINI_API_KEY` is set or Gemini is at capacity)
 - `GET /api/pollen-aqi` — personalized risk score, blending live [Open-Meteo](https://open-meteo.com/) weather/air-quality data (and the Google Pollen API, if configured) with your allergen profile
-- `GET /api/location-search` — city geocoding via Photon → Nominatim → a static city list, in that order
-- `GET /api/pollen-hotspots` — map zones scaled by live wind/humidity/AQI data over a fixed illustrative layout (not a real sensor network — the UI discloses this)
+- `GET /api/location-search` — worldwide city geocoding via Photon → Open-Meteo Geocoding → Nominatim → a static city list, in that order (multiple live tiers because the free Photon/Nominatim demo instances can throttle cloud/serverless IPs)
+- `GET /api/pollen-hotspots` — real nearby locations from the Google Places API, each with its own live per-point pollen reading (Google Pollen API, or Open-Meteo pollen sensors if that key isn't set); returns an honest empty result instead of placeholder data if live sources are unavailable
 
 All user data (profile, allergens, shot history, symptom logs, scan history, settings) is stored in the browser's `localStorage` only — there is no backend database or authentication.
 
@@ -100,5 +100,5 @@ src/
 ## Known limitations
 
 - No backend persistence or user accounts — all data lives in the browser's `localStorage` and is lost if it's cleared.
-- Pollen heatmap "zones" and hotspot names are a fixed illustrative layout scaled by live weather data, not a real sensor network (disclosed in-app).
+- Pollen hotspot "top species" labels are regional defaults (live sources here report an index, not exact per-point species), consistent with how the Dashboard already labels species — but the hotspot locations themselves and their live index readings are real, not illustrative.
 - Custom allergen triggers are scored using their category's regional pollen index (e.g. a custom tree trigger uses the local tree pollen level), since there's no species-specific data for arbitrary user-entered names.

@@ -76,8 +76,9 @@ export const MASTER_ALLERGENS: AllergenItem[] = [
     season: 'Spring (April – May)',
     peakMonths: [3, 4],
     commonLocations: 'Wet woodlands, city shade trees, Midwest and Eastern US.',
-    description: 'Cross-reactive with olive and privet pollen. High allergenicity during peak spring bloom.',
-    imageUrl: 'https://images.unsplash.com/photo-1473448912268-2022ce9509d8?auto=format&fit=crop&w=600&q=80'
+    description: 'Cross-reactive with olive and privet pollen. High allergenicity during peak spring bloom.'
+    // No imageUrl: the previous photo (a river landscape) did not actually depict an Ash Tree
+    // and was removed rather than guessed at without a verified replacement.
   },
 
   // GRASSES
@@ -146,8 +147,9 @@ export const MASTER_ALLERGENS: AllergenItem[] = [
     season: 'Late Summer & Fall (August – September)',
     peakMonths: [7, 8],
     commonLocations: 'Arid western plains, dry hillsides, urban scrubland.',
-    description: 'Highly aromatic weed with small wind-pollinated flowers. Cross-reactive with celery, spices, and chamomile.',
-    imageUrl: 'https://images.unsplash.com/photo-1465146344425-f00d5f5c8f07?auto=format&fit=crop&w=600&q=80'
+    description: 'Highly aromatic weed with small wind-pollinated flowers. Cross-reactive with celery, spices, and chamomile.'
+    // No imageUrl: the previous photo (a field of orange poppies) did not actually depict
+    // Sagebrush/Mugwort and was removed rather than guessed at without a verified replacement.
   },
   {
     id: 'pigweed',

@@ -217,12 +217,14 @@ export const PollenHeatmapView: React.FC<PollenHeatmapViewProps> = ({
   const [citySuggestions, setCitySuggestions] = useState<Array<{ cityName: string; region: string; lat: number; lng: number }>>([]);
   const [showCityDropdown, setShowCityDropdown] = useState(false);
 
-  // Fetch hotspots from server API
+  // Fetch hotspots from server API. Real per-place data (Google Places + live pollen readings)
+  // takes a bit longer than the old fabricated pins did, so this allows more time before
+  // giving up. On any failure, we show an honest empty state rather than fake illustrative pins.
   const fetchHotspots = useCallback(async (lat: number, lng: number, locName: string) => {
     setIsLoading(true);
     setFetchError(null);
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 4000);
+    const timer = setTimeout(() => controller.abort(), 8000);
 
     try {
       const algsJson = encodeURIComponent(JSON.stringify(userProfile.allergens));
@@ -239,91 +241,17 @@ export const PollenHeatmapView: React.FC<PollenHeatmapViewProps> = ({
         setSelectedHotspot(data.hotspots[0]);
         setIsFallbackData(false);
       } else {
-        throw new Error('Server returned no hotspot data');
+        setHotspots([]);
+        setSelectedHotspot(null);
+        setIsFallbackData(true);
+        setFetchError(data.message || 'No verified live hotspot data is currently available for this area.');
       }
     } catch (err) {
-      console.warn('Notice loading live hotspots, using local terrain telemetry fallback:', err);
+      console.warn('Notice loading live hotspots:', err);
       setFetchError(err instanceof Error ? err.message : 'Unknown error contacting hotspot service');
       setIsFallbackData(true);
-      const fallbackList: PollenHotspot[] = [
-        {
-          id: 'hs_fb_1',
-          name: `${locName} Botanical Garden & Arboretum`,
-          type: 'botanical',
-          lat: lat + 0.024,
-          lng: lng - 0.031,
-          overallRisk: 'Very High',
-          overallScore: 78,
-          pollenCountGrains: 540,
-          treePollen: 82,
-          grassPollen: 35,
-          weedPollen: 28,
-          moldCount: 22,
-          aqi: 45,
-          dominantSpecies: 'Oak Tree',
-          dominantCategory: 'tree',
-          isProfileMatch: !!userProfile.allergens['oak'],
-          matchedUserAllergen: userProfile.allergens['oak'] ? 'Oak Tree' : undefined,
-          userSeverity: userProfile.allergens['oak'],
-          windSpeedMph: 8,
-          windDirection: 'S',
-          temperatureF: 75,
-          humidityPct: 52,
-          advisory: 'Limit afternoon strolls; canopy pollen shedding is intense.',
-        },
-        {
-          id: 'hs_fb_2',
-          name: `${locName} Greenbelt River Basin`,
-          type: 'greenbelt',
-          lat: lat - 0.038,
-          lng: lng - 0.045,
-          overallRisk: 'High',
-          overallScore: 72,
-          pollenCountGrains: 460,
-          treePollen: 40,
-          grassPollen: 38,
-          weedPollen: 75,
-          moldCount: 30,
-          aqi: 48,
-          dominantSpecies: 'Ragweed',
-          dominantCategory: 'weed',
-          isProfileMatch: !!userProfile.allergens['ragweed'],
-          matchedUserAllergen: userProfile.allergens['ragweed'] ? 'Ragweed' : undefined,
-          userSeverity: userProfile.allergens['ragweed'],
-          windSpeedMph: 8,
-          windDirection: 'S',
-          temperatureF: 75,
-          humidityPct: 52,
-          advisory: 'Wear protective sunglasses and rinse with saline post-visit.',
-        },
-        {
-          id: 'hs_fb_3',
-          name: `${locName} Regional Athletic Park & Turf`,
-          type: 'park',
-          lat: lat + 0.052,
-          lng: lng + 0.022,
-          overallRisk: 'High',
-          overallScore: 65,
-          pollenCountGrains: 380,
-          treePollen: 32,
-          grassPollen: 70,
-          weedPollen: 35,
-          moldCount: 25,
-          aqi: 42,
-          dominantSpecies: 'Bermuda Grass',
-          dominantCategory: 'grass',
-          isProfileMatch: !!userProfile.allergens['bermuda_grass'],
-          matchedUserAllergen: userProfile.allergens['bermuda_grass'] ? 'Bermuda Grass' : undefined,
-          userSeverity: userProfile.allergens['bermuda_grass'],
-          windSpeedMph: 8,
-          windDirection: 'S',
-          temperatureF: 75,
-          humidityPct: 52,
-          advisory: 'Avoid vigorous running during midday hours.',
-        },
-      ];
-      setHotspots(fallbackList);
-      setSelectedHotspot(fallbackList[0]);
+      setHotspots([]);
+      setSelectedHotspot(null);
     } finally {
       clearTimeout(timer);
       setIsLoading(false);
@@ -634,15 +562,15 @@ export const PollenHeatmapView: React.FC<PollenHeatmapViewProps> = ({
           </div>
         </div>
 
-        {/* FALLBACK DATA DISCLOSURE BANNER */}
+        {/* LIVE DATA UNAVAILABLE DISCLOSURE BANNER */}
         {isFallbackData && !isLoading && (
           <div className="p-3.5 bg-amber-50 border border-amber-300 rounded-2xl flex items-start gap-3">
             <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
             <div className="text-xs text-amber-900">
-              <span className="font-bold block">Hotspot service unavailable — showing a local modeled estimate</span>
+              <span className="font-bold block">Live pollen hotspot data unavailable</span>
               <span>
-                {fetchError ? `(${fetchError}) ` : ''}
-                Zones below use fixed illustrative locations, not live sensor data. Try the refresh button to reconnect.
+                {fetchError ? `${fetchError} ` : ''}
+                AllerScan only shows verified real locations with live pollen readings — no illustrative or placeholder zones are displayed. Try the refresh button to reconnect.
               </span>
             </div>
           </div>
@@ -808,8 +736,11 @@ export const PollenHeatmapView: React.FC<PollenHeatmapViewProps> = ({
 
                       <div className="text-[11px] text-slate-600 space-y-0.5">
                         <div><strong>Dominant:</strong> {selectedHotspot.dominantSpecies}</div>
-                        <div><strong>Pollen Count:</strong> {selectedHotspot.pollenCountGrains} grains/m³</div>
+                        {typeof selectedHotspot.pollenCountGrains === 'number' && (
+                          <div><strong>Pollen Count:</strong> {selectedHotspot.pollenCountGrains} grains/m³</div>
+                        )}
                         <div><strong>AQI:</strong> {selectedHotspot.aqi} • Wind: {selectedHotspot.windSpeedMph}mph {selectedHotspot.windDirection}</div>
+                        <div className="text-slate-400">{selectedHotspot.dataSource}</div>
                         {selectedHotspot.isProfileMatch && (
                           <div className="text-rose-600 font-bold mt-1">⚠️ Matches profile ({selectedHotspot.userSeverity || 'moderate'})</div>
                         )}
@@ -969,7 +900,11 @@ export const PollenHeatmapView: React.FC<PollenHeatmapViewProps> = ({
                   <div className="p-3 bg-slate-50 rounded-2xl border border-slate-100">
                     <span className="text-[10px] font-bold text-slate-400 uppercase block">Pollen Density</span>
                     <div className="text-xl font-black text-slate-800">
-                      {selectedHotspot.pollenCountGrains} <span className="text-[10px] text-slate-400 font-normal">gr/m³</span>
+                      {typeof selectedHotspot.pollenCountGrains === 'number' ? (
+                        <>{selectedHotspot.pollenCountGrains} <span className="text-[10px] text-slate-400 font-normal">gr/m³</span></>
+                      ) : (
+                        <span className="text-sm text-slate-400 font-semibold">Not measured</span>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -1039,8 +974,14 @@ export const PollenHeatmapView: React.FC<PollenHeatmapViewProps> = ({
             <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-xs space-y-3">
               <h3 className="text-xs font-black uppercase tracking-wider text-slate-400 flex items-center justify-between">
                 <span>Nearby Zones ({hotspots.length})</span>
-                <span className="text-[10px] text-emerald-600 font-bold" title="Fixed illustrative zones scaled by live wind, humidity & AQI data">Modeled Estimate</span>
+                <span className="text-[10px] text-emerald-600 font-bold" title="Real Google Places locations, each with its own live pollen reading">Verified Live Data</span>
               </h3>
+
+              {hotspots.length === 0 && (
+                <div className="py-6 text-center text-xs text-slate-400">
+                  No verified hotspot data available right now.
+                </div>
+              )}
 
               <div className="space-y-2 max-h-[260px] overflow-y-auto pr-1">
                 {hotspots.map((hs) => {
@@ -1064,7 +1005,8 @@ export const PollenHeatmapView: React.FC<PollenHeatmapViewProps> = ({
                           )}
                         </div>
                         <div className="text-[11px] text-slate-500 truncate">
-                          {hs.dominantSpecies} • {hs.pollenCountGrains} gr/m³
+                          {hs.dominantSpecies}
+                          {typeof hs.pollenCountGrains === 'number' ? ` • ${hs.pollenCountGrains} gr/m³` : ''}
                         </div>
                       </div>
 

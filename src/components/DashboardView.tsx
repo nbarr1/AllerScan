@@ -76,6 +76,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     forecast,
     locationName,
     updatedAt,
+    timeZoneAbbr,
+    timeZoneNote,
     weather,
     dataSource
   } = envData;
@@ -157,7 +159,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   {riskCategory} Risk Level
                 </span>
                 <span className="text-xs text-slate-400 flex items-center gap-1.5">
-                  Updated {updatedAt}
+                  Updated {updatedAt}{timeZoneAbbr ? ` ${timeZoneAbbr}` : ''}
                   <button
                     onClick={onRefreshData}
                     disabled={isLoading}
@@ -174,6 +176,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   </span>
                 )}
               </div>
+
+              {timeZoneNote && (
+                <p className="text-[11px] text-amber-400 flex items-start gap-1.5 max-w-md">
+                  <Info className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                  <span>{timeZoneNote}</span>
+                </p>
+              )}
 
               <h1 className="text-xl sm:text-2xl font-extrabold tracking-tight">
                 {matchedActiveAllergens.length > 0 ? (
