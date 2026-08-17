@@ -1041,14 +1041,18 @@ app.get("/api/pollen-hotspots", async (req, res) => {
       }
     }
 
-    // Real nearby locations via the Places API (New) Text Search — the same
-    // GOOGLE_MAPS_PLATFORM_KEY already required to render the map itself.
-    const mapsKey = process.env.GOOGLE_MAPS_PLATFORM_KEY;
+    // Real nearby locations via the Places API (New) Text Search. This is a server-to-server
+    // call, so it deliberately does NOT default to GOOGLE_MAPS_PLATFORM_KEY: that key is
+    // documented (see .env.example / README) as browser-facing and typically restricted by
+    // HTTP referrer, which Google rejects for non-browser requests with a 403 (no Referer
+    // header to validate against the allowlist). GOOGLE_PLACES_SERVER_KEY is a separate key
+    // meant to be IP-restricted (or API-restricted only) instead, so it actually works here.
+    const placesKey = process.env.GOOGLE_PLACES_SERVER_KEY || process.env.GOOGLE_MAPS_PLATFORM_KEY;
     let realPlaces: Array<{ id: string; name: string; lat: number; lng: number; address?: string }> = [];
     let unavailableReason: string | null = null;
 
-    if (!mapsKey) {
-      unavailableReason = "Google Maps Platform key is not configured on the server.";
+    if (!placesKey) {
+      unavailableReason = "No Places API key is configured on the server (GOOGLE_PLACES_SERVER_KEY or GOOGLE_MAPS_PLATFORM_KEY).";
     } else {
       try {
         const placesResp = await fetchWithTimeout(
@@ -1057,7 +1061,7 @@ app.get("/api/pollen-hotspots", async (req, res) => {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
-              "X-Goog-Api-Key": mapsKey,
+              "X-Goog-Api-Key": placesKey,
               "X-Goog-FieldMask": "places.id,places.displayName,places.location,places.formattedAddress",
             },
             body: JSON.stringify({
@@ -1086,8 +1090,21 @@ app.get("/api/pollen-hotspots", async (req, res) => {
           if (realPlaces.length === 0) {
             unavailableReason = "No real nearby locations were returned for this area.";
           }
+        } else if (placesResp) {
+          // Surface Google's actual error message (e.g. "API_KEY_HTTP_REFERRER_BLOCKED",
+          // "This API key is not authorized to use this service or API", billing not enabled,
+          // Places API (New) not enabled, etc.) instead of just the bare status code, so a
+          // misconfigured key is diagnosable from the response alone.
+          let detail = "";
+          try {
+            const errBody = await placesResp.json();
+            detail = errBody?.error?.message ? ` — ${errBody.error.message}` : "";
+          } catch {
+            // response wasn't JSON; fall back to just the status code below
+          }
+          unavailableReason = `Places API returned ${placesResp.status}${detail}. Check that GOOGLE_PLACES_SERVER_KEY (or GOOGLE_MAPS_PLATFORM_KEY) is not HTTP-referrer restricted, has "Places API (New)" enabled, and belongs to a project with billing enabled.`;
         } else {
-          unavailableReason = `Places API returned ${placesResp ? placesResp.status : "no response"}.`;
+          unavailableReason = "Places API request failed or timed out.";
         }
       } catch (placesErr) {
         console.warn("Places API error in /api/pollen-hotspots:", placesErr);
