@@ -1069,9 +1069,15 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`AllerScan Express server running on http://0.0.0.0:${PORT}`);
-  });
+  // On Vercel, the platform's own runtime invokes the exported app per-request
+  // (see api/index.ts) instead of listening on a port itself.
+  if (!process.env.VERCEL) {
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`AllerScan Express server running on http://0.0.0.0:${PORT}`);
+    });
+  }
 }
 
 startServer();
+
+export default app;
