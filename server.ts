@@ -3,7 +3,7 @@ import fs from "fs";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
-import { DEFAULT_CITY_OPTIONS } from "./src/data/defaultCities";
+import { DEFAULT_CITY_OPTIONS } from "./src/data/defaultCities.js";
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
