@@ -13,19 +13,27 @@ Personal allergen scanner and air-quality tracker: AI-powered plant/mold identif
 | **Scan** | Camera/upload plant & mold identification via Gemini Vision, cross-referenced against your allergen profile. Falls back to a clearly-labeled example result if Gemini is unavailable. |
 | **Allergy Shots** | Immunotherapy schedule tracking: build-up/maintenance phase, interval, arm rotation, reaction logging, allergist contact info. |
 | **Insights & Logs** | Daily symptom journal (sneezing, congestion, etc.) with a severity trend chart. |
-| **My Allergens** | Select known allergens by severity from a 20-item database (trees/grasses/weeds/molds/indoor), or add custom triggers. |
-| **Settings** | Notification preferences, quiet hours, PWA/native install guide, data reset. |
+| **My Allergens** | Select known allergens by severity from a 20-item database (trees/grasses/weeds/molds/indoor), add custom triggers, and set how reactive you are compared with a typical sufferer. |
+| **Settings** | In-app alert preferences (pollen, AQI, shot reminders, daily summary), a severity threshold, quiet hours, the PWA/native install guide, and data deletion. |
 
 ## Architecture
 
 AllerScan is a single Express server (`server.ts`) that both serves the Vite-built React frontend and hosts the API routes the frontend calls:
 
-- `POST /api/scan` — Gemini Vision plant/mold identification (falls back to a labeled example result if no `GEMINI_API_KEY` is set or Gemini is at capacity)
-- `GET /api/pollen-aqi` — personalized risk score, blending live [Open-Meteo](https://open-meteo.com/) weather/air-quality data (and the Google Pollen API, if configured) with your allergen profile
+- `POST /api/scan` — Gemini Vision plant/mold identification (falls back to a labeled example result if no `GEMINI_API_KEY` is set or Gemini is at capacity). The `imageUrl` form only accepts the preset sample hosts; send anything else as base64.
+- `GET /api/pollen-aqi` — personalized risk score, blending live [Open-Meteo](https://open-meteo.com/) weather/air-quality data (and the Google Pollen API, if configured) with your allergen profile and `sensitivityFactor`. Weather and pollen provenance are reported separately (`dataSource` vs `pollenDataSource`/`pollenIsModeled`), because a live weather reading doesn't imply live pollen coverage for the same point. Figures nothing measured — weather, air quality — are omitted rather than estimated.
 - `GET /api/location-search` — worldwide city geocoding via Photon → Open-Meteo Geocoding → Nominatim → a static city list, in that order (multiple live tiers because the free Photon/Nominatim demo instances can throttle cloud/serverless IPs)
+- `GET /api/reverse-geocode` — coordinates to a place name (Photon → Nominatim), so "use my location" stores a real city rather than a placeholder label
 - `GET /api/pollen-hotspots` — real nearby locations from the Google Places API, each with its own live per-point pollen reading (Google Pollen API, or Open-Meteo pollen sensors if that key isn't set); returns an honest empty result instead of placeholder data if live sources are unavailable
 
-All user data (profile, allergens, shot history, symptom logs, scan history, settings) is stored in the browser's `localStorage` only — there is no backend database or authentication.
+Upstream responses are cached in memory by rounded coordinate for a few minutes, so repeated
+refreshes and multiple users in one city share a single round trip to each provider.
+
+All user data (profile, allergens, shot history, symptom logs, scan history, settings) is stored in the browser's `localStorage` only — there is no backend database or authentication. Scan photos are downscaled before storage and the history is capped, so a few camera scans can't exhaust the ~5 MB budget; if a write fails anyway, the app says so instead of showing data it didn't keep.
+
+A service worker (`public/sw.js`) caches the app shell and hashed build assets so AllerScan opens
+offline with your saved data. API responses are never cached — a stale risk score is worse than no
+risk score — and navigations are network-first so the runtime-injected Maps key stays current.
 
 **Tech stack:** React 19 · TypeScript · Vite 6 · Tailwind CSS 4 · Express 4 · `@google/genai` (Gemini) · `@vis.gl/react-google-maps` · Recharts · `tsx` (dev) / `esbuild` (server bundling for production)
 
@@ -103,5 +111,7 @@ src/
 ## Known limitations
 
 - No backend persistence or user accounts — all data lives in the browser's `localStorage` and is lost if it's cleared.
-- Pollen hotspot "top species" labels are regional defaults (live sources here report an index, not exact per-point species), consistent with how the Dashboard already labels species — but the hotspot locations themselves and their live index readings are real, not illustrative.
+- Pollen hotspots report which *category* (tree/grass/weed/mold) reads highest at each point, not a species: live sources report a category index, not per-point species. When a hotspot matches your profile, the UI names the allergen you actually saved.
 - Custom allergen triggers are scored using their category's regional pollen index (e.g. a custom tree trigger uses the local tree pollen level), since there's no species-specific data for arbitrary user-entered names.
+- Alerts are in-app only: they appear in the notification bell when the app refreshes its data. There is no push delivery, so nothing reaches you while the app is closed. Quiet hours and the severity threshold apply to these in-app alerts.
+- Route comparison ranks the alternatives Google returns by how close each passes to known hotspots. When only one route exists, or the alternatives pass the same hotspots, the UI says so rather than claiming a low-pollen route.

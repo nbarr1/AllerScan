@@ -23,13 +23,23 @@ import {
   RefreshCw
 } from 'lucide-react';
 import { EnvironmentalData, ImmunotherapySchedule, UserAllergenProfile } from '../types';
+import { TabType } from './Navigation';
+import { daysFromToday } from '../utils/dates';
+import { aqiPillOnDark, themeForLevel, themeForScore } from '../utils/severity';
+
+const POLLEN_TILES = [
+  { key: 'tree' as const, label: 'Tree Pollen', Icon: Trees, iconClass: 'bg-emerald-50 text-emerald-700' },
+  { key: 'grass' as const, label: 'Grass Pollen', Icon: Wheat, iconClass: 'bg-amber-50 text-amber-700' },
+  { key: 'weed' as const, label: 'Weed Pollen', Icon: Flower2, iconClass: 'bg-rose-50 text-rose-700' },
+  { key: 'mold' as const, label: 'Mold Spores', Icon: Biohazard, iconClass: 'bg-purple-50 text-purple-700' },
+];
 
 interface DashboardViewProps {
   envData: EnvironmentalData | null;
   isLoading: boolean;
   userProfile: UserAllergenProfile;
   schedule: ImmunotherapySchedule;
-  onNavigate: (tab: any) => void;
+  onNavigate: (tab: TabType) => void;
   onRefreshData: () => void;
 }
 
@@ -56,6 +66,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         <AlertTriangle className="w-12 h-12 text-amber-500" />
         <p className="text-sm font-semibold text-slate-700">Unable to load environmental data for {userProfile.location.cityName}.</p>
         <button
+          type="button"
           onClick={onRefreshData}
           className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl shadow transition-colors flex items-center gap-2"
         >
@@ -82,29 +93,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     dataSource
   } = envData;
 
-  const getGaugeColor = (score: number) => {
-    if (score >= 70) return { stroke: '#f43f5e', text: 'text-rose-600', bg: 'bg-rose-50', border: 'border-rose-200' };
-    if (score >= 50) return { stroke: '#f97316', text: 'text-amber-600', bg: 'bg-amber-50', border: 'border-amber-200' };
-    if (score >= 30) return { stroke: '#f59e0b', text: 'text-amber-600', bg: 'bg-amber-50', border: 'border-amber-200' };
-    return { stroke: '#10b981', text: 'text-emerald-600', bg: 'bg-emerald-50', border: 'border-emerald-200' };
-  };
-
-  const colorConfig = getGaugeColor(overallPersonalRiskScore);
+  const riskTheme = themeForScore(overallPersonalRiskScore);
   const isLiveWeatherSource = Boolean(dataSource && dataSource.toLowerCase().includes('live'));
+  // The pollen figures have their own provenance: Open-Meteo's weather call can succeed for a
+  // point its pollen sensors don't cover, and those two facts must not share one "Live" badge.
+  const pollenSourceLabel = envData.pollenDataSource || dataSource;
+  const isPollenModeled = envData.pollenIsModeled ?? false;
 
-  // Shot countdown calculation
-  const getDaysUntilNextShot = () => {
-    if (!schedule.enabled || !schedule.nextShotDate) return null;
-    const target = new Date(schedule.nextShotDate);
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    target.setHours(0, 0, 0, 0);
-    const diffTime = target.getTime() - today.getTime();
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-    return diffDays;
-  };
-
-  const daysUntilShot = getDaysUntilNextShot();
+  // Shot countdown, compared as local calendar days.
+  const daysUntilShot = schedule.enabled ? daysFromToday(schedule.nextShotDate) : null;
 
   return (
     <div className="space-y-6 pb-20 md:pb-8">
@@ -137,7 +134,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   cx="50"
                   cy="50"
                   r="42"
-                  stroke={colorConfig.stroke}
+                  stroke={riskTheme.hex}
                   strokeWidth="10"
                   strokeDasharray={2 * Math.PI * 42}
                   strokeDashoffset={2 * Math.PI * 42 * (1 - overallPersonalRiskScore / 100)}
@@ -155,24 +152,40 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             {/* Risk Title & Dynamic Summary */}
             <div className="space-y-2">
               <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2">
-                <span className={`px-3 py-1 rounded-full text-xs font-black uppercase tracking-wider ${colorConfig.bg} ${colorConfig.text} border ${colorConfig.border}`}>
+                <span className={`px-3 py-1 rounded-full text-xs font-black uppercase tracking-wider border ${riskTheme.badge}`}>
                   {riskCategory} Risk Level
                 </span>
                 <span className="text-xs text-slate-400 flex items-center gap-1.5">
                   Updated {updatedAt}{timeZoneAbbr ? ` ${timeZoneAbbr}` : ''}
                   <button
+                    type="button"
                     onClick={onRefreshData}
                     disabled={isLoading}
-                    title="Refresh Environmental Data"
+                    aria-label="Refresh environmental data"
                     className="p-1 hover:bg-slate-800 rounded-full text-slate-400 hover:text-emerald-400 transition-colors disabled:opacity-50"
                   >
-                    <RefreshCw className={`w-3 h-3 ${isLoading ? 'animate-spin text-emerald-400' : ''}`} />
+                    <RefreshCw className={`w-3 h-3 ${isLoading ? 'animate-spin text-emerald-400' : ''}`} aria-hidden="true" />
                   </button>
                 </span>
-                {dataSource && (
-                  <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-emerald-950/80 text-emerald-300 border border-emerald-800/80 flex items-center gap-1">
-                    <Radio className="w-3 h-3 text-emerald-400 animate-pulse" />
-                    {dataSource}
+                {pollenSourceLabel && (
+                  <span
+                    className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full border flex items-center gap-1 ${
+                      isPollenModeled
+                        ? 'bg-amber-950/80 text-amber-300 border-amber-800/80'
+                        : 'bg-emerald-950/80 text-emerald-300 border-emerald-800/80'
+                    }`}
+                    title={
+                      isPollenModeled
+                        ? 'Pollen figures are a seasonal estimate, not a live sensor reading'
+                        : 'Pollen figures come from a live data source'
+                    }
+                  >
+                    {isPollenModeled ? (
+                      <Info className="w-3 h-3 text-amber-400" aria-hidden="true" />
+                    ) : (
+                      <Radio className="w-3 h-3 text-emerald-400" aria-hidden="true" />
+                    )}
+                    {isPollenModeled ? `Estimated pollen — ${pollenSourceLabel}` : pollenSourceLabel}
                   </span>
                 )}
               </div>
@@ -206,6 +219,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           {/* Right Column: Quick Action CTA Buttons */}
           <div className="md:col-span-5 flex flex-col gap-2.5 sm:pl-4 border-t md:border-t-0 md:border-l border-slate-700/80 pt-4 md:pt-0">
             <button
+              type="button"
               onClick={() => onNavigate('heatmap')}
               className="w-full py-2.5 px-4 bg-orange-500 hover:bg-orange-400 text-slate-950 font-extrabold text-xs sm:text-sm rounded-2xl shadow-lg shadow-orange-500/20 transition-all flex items-center justify-center gap-2 group"
             >
@@ -214,6 +228,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </button>
 
             <button
+              type="button"
               onClick={() => onNavigate('scan')}
               className="w-full py-2.5 px-4 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-xs sm:text-sm rounded-2xl shadow-lg shadow-emerald-500/20 transition-all flex items-center justify-center gap-2 group"
             >
@@ -222,18 +237,19 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </button>
 
             <button
+              type="button"
               onClick={() => onNavigate('shots')}
               className="w-full py-2.5 px-4 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs rounded-2xl transition-all border border-slate-700 flex items-center justify-center gap-2"
             >
               <Syringe className="w-4 h-4 text-amber-400" />
               <span>
-                {daysUntilShot !== null ? (
-                  daysUntilShot === 0
-                    ? '💉 Shot Due Today!'
-                    : `Next Allergy Shot in ${daysUntilShot} Days`
-                ) : (
-                  'Allergy Shot Reminders'
-                )}
+                {daysUntilShot === null
+                  ? 'Allergy Shot Reminders'
+                  : daysUntilShot === 0
+                  ? '💉 Shot Due Today'
+                  : daysUntilShot < 0
+                  ? `Shot Overdue by ${Math.abs(daysUntilShot)} Day${Math.abs(daysUntilShot) === 1 ? '' : 's'}`
+                  : `Next Allergy Shot in ${daysUntilShot} Day${daysUntilShot === 1 ? '' : 's'}`}
               </span>
             </button>
           </div>
@@ -287,104 +303,56 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <Wind className="w-4 h-4 text-emerald-600" /> Real-time Pollen & AQI Radar
           </h2>
           <button
+            type="button"
             onClick={onRefreshData}
-            className="text-xs font-semibold text-emerald-600 hover:text-emerald-700"
+            disabled={isLoading}
+            className="text-xs font-semibold text-emerald-600 hover:text-emerald-700 disabled:text-slate-400 disabled:cursor-not-allowed"
           >
-            ↻ Refresh Data
+            {isLoading ? 'Refreshing…' : '↻ Refresh Data'}
           </button>
         </div>
 
-        <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+        <div className={`grid grid-cols-2 gap-3 ${aqi ? 'lg:grid-cols-5' : 'lg:grid-cols-4'}`}>
           
-          {/* Tree Pollen */}
-          <div className="p-4 bg-white rounded-2xl border border-slate-200 shadow-xs space-y-2">
-            <div className="flex justify-between items-center">
-              <div className="p-2 rounded-xl bg-emerald-50 text-emerald-700">
-                <Trees className="w-4 h-4" />
+          {/* Pollen category tiles. One severity scale for all four, shared with the hero gauge,
+              the forecast bars and the AQI pill — see utils/severity.ts. */}
+          {POLLEN_TILES.map(({ key, label, Icon, iconClass }) => {
+            const reading = pollen[key];
+            const tileTheme = themeForLevel(reading.level);
+            const species = reading.topSpecies?.filter(Boolean) ?? [];
+            return (
+              <div key={key} className="p-4 bg-white rounded-2xl border border-slate-200 shadow-xs space-y-2">
+                <div className="flex justify-between items-center">
+                  <div className={`p-2 rounded-xl ${iconClass}`}>
+                    <Icon className="w-4 h-4" aria-hidden="true" />
+                  </div>
+                  <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full border ${tileTheme.badge}`}>
+                    {reading.level}
+                  </span>
+                </div>
+                <div>
+                  <div className="text-2xl font-black text-slate-900">
+                    {reading.value} <span className="text-xs text-slate-400 font-normal">/100</span>
+                  </div>
+                  <div className="text-xs font-bold text-slate-700 mt-0.5">{label}</div>
+                </div>
+                {species.length > 0 && (
+                  <p className="text-[10px] text-slate-500 truncate" title={species.join(', ')}>
+                    {species.join(', ')}
+                  </p>
+                )}
               </div>
-              <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${
-                pollen.tree.value >= 50 ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'
-              }`}>
-                {pollen.tree.level}
-              </span>
-            </div>
-            <div>
-              <div className="text-2xl font-black text-slate-900">{pollen.tree.value} <span className="text-xs text-slate-400 font-normal">/100</span></div>
-              <div className="text-xs font-bold text-slate-700 mt-0.5">Tree Pollen</div>
-            </div>
-            <p className="text-[10px] text-slate-500 truncate">
-              {pollen.tree.topSpecies.join(', ')}
-            </p>
-          </div>
+            );
+          })}
 
-          {/* Grass Pollen */}
-          <div className="p-4 bg-white rounded-2xl border border-slate-200 shadow-xs space-y-2">
-            <div className="flex justify-between items-center">
-              <div className="p-2 rounded-xl bg-amber-50 text-amber-700">
-                <Wheat className="w-4 h-4" />
-              </div>
-              <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${
-                pollen.grass.value >= 50 ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'
-              }`}>
-                {pollen.grass.level}
-              </span>
-            </div>
-            <div>
-              <div className="text-2xl font-black text-slate-900">{pollen.grass.value} <span className="text-xs text-slate-400 font-normal">/100</span></div>
-              <div className="text-xs font-bold text-slate-700 mt-0.5">Grass Pollen</div>
-            </div>
-            <p className="text-[10px] text-slate-500 truncate">
-              {pollen.grass.topSpecies.join(', ')}
-            </p>
-          </div>
 
-          {/* Weed Pollen */}
-          <div className="p-4 bg-white rounded-2xl border border-slate-200 shadow-xs space-y-2">
-            <div className="flex justify-between items-center">
-              <div className="p-2 rounded-xl bg-rose-50 text-rose-700">
-                <Flower2 className="w-4 h-4" />
-              </div>
-              <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${
-                pollen.weed.value >= 50 ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'
-              }`}>
-                {pollen.weed.level}
-              </span>
-            </div>
-            <div>
-              <div className="text-2xl font-black text-slate-900">{pollen.weed.value} <span className="text-xs text-slate-400 font-normal">/100</span></div>
-              <div className="text-xs font-bold text-slate-700 mt-0.5">Weed Pollen</div>
-            </div>
-            <p className="text-[10px] text-slate-500 truncate">
-              {pollen.weed.topSpecies.join(', ')}
-            </p>
-          </div>
-
-          {/* Mold Spores */}
-          <div className="p-4 bg-white rounded-2xl border border-slate-200 shadow-xs space-y-2">
-            <div className="flex justify-between items-center">
-              <div className="p-2 rounded-xl bg-purple-50 text-purple-700">
-                <Biohazard className="w-4 h-4" />
-              </div>
-              <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${
-                pollen.mold.value >= 50 ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'
-              }`}>
-                {pollen.mold.level}
-              </span>
-            </div>
-            <div>
-              <div className="text-2xl font-black text-slate-900">{pollen.mold.value} <span className="text-xs text-slate-400 font-normal">/100</span></div>
-              <div className="text-xs font-bold text-slate-700 mt-0.5">Mold Spores</div>
-            </div>
-            <p className="text-[10px] text-slate-500 truncate">
-              {pollen.mold.topSpecies.join(', ')}
-            </p>
-          </div>
-
-          {/* Air Quality Index (AQI) */}
+          {/* Air Quality Index (AQI). Omitted entirely when no live reading was available —
+              the offline estimate doesn't invent one. */}
+          {aqi && (
           <div className="col-span-2 lg:col-span-1 p-4 bg-slate-900 text-white rounded-2xl shadow-xs space-y-2">
             <div className="flex justify-between items-center">
               <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400">Air Quality</span>
-              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-800 text-emerald-400 border border-slate-700">
+              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${aqiPillOnDark(aqi.category)}`}>
                 {aqi.category}
               </span>
             </div>
@@ -394,6 +362,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
             <p className="text-[10px] text-slate-400">Ozone: {aqi.ozone} ppb • PM10: {aqi.pm10}</p>
           </div>
+          )}
 
         </div>
 
@@ -465,14 +434,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   </div>
                   <div className="w-full h-2 bg-slate-200 rounded-full overflow-hidden">
                     <div
-                      className={`h-full rounded-full transition-all duration-500 ${
-                        day.overallScore >= 70
-                          ? 'bg-rose-500'
-                          : day.overallScore >= 50
-                          ? 'bg-amber-500'
-                          : 'bg-emerald-500'
-                      }`}
-                      style={{ width: `${day.overallScore}%` }}
+                      className={`h-full rounded-full transition-all duration-500 ${themeForScore(day.overallScore).bar}`}
+                      style={{ width: `${Math.min(100, Math.max(0, day.overallScore))}%` }}
                     />
                   </div>
                 </div>
@@ -500,10 +463,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
           <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
             <span className="flex items-center gap-1">
-              <Info className="w-3.5 h-3.5 text-slate-400" />
-              Adjust profile sensitivity in Settings
+              <Info className="w-3.5 h-3.5 text-slate-400" aria-hidden="true" />
+              Tune your triggers and reaction sensitivity in My Allergens
             </span>
             <button
+              type="button"
               onClick={() => onNavigate('profile')}
               className="font-bold text-emerald-600 hover:underline"
             >

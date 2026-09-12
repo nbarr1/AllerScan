@@ -1,25 +1,42 @@
 import { EnvironmentalData, SeverityLevel, CustomAllergenMeta } from '../types';
+import { applySensitivity } from './sensitivity';
 
+/**
+ * The offline estimate, used when the API can't be reached.
+ *
+ * Everything here is a seasonal/geographic model, and it says so: `pollenIsModeled` is true and
+ * `dataSource` names the model, so the dashboard labels the figures rather than presenting them as
+ * a reading. Two things it deliberately does NOT do:
+ *
+ *   - Invent weather. It used to return 76 °F, 52 % humidity and "Partly cloudy" for every point on
+ *     Earth, which reads as a measurement. `weather` is simply absent, and the dashboard omits the
+ *     strip.
+ *   - Invent air quality. Same reasoning: `aqi` is absent rather than derived from a sine wave.
+ */
 export function generateFallbackEnvData(
   locationName: string,
   userAllergens: Record<string, SeverityLevel> = {},
   lat = 30.2672,
   lng = -97.7431,
-  customAllergens: Record<string, CustomAllergenMeta> = {}
+  customAllergens: Record<string, CustomAllergenMeta> = {},
+  sensitivityFactor = 2
 ): EnvironmentalData {
-  // Deterministic calculation based on latitude/longitude and user allergens
   const now = new Date();
-  const month = now.getMonth(); // 0 to 11
 
-  // Seasonal multipliers
+  // Seasons invert below the equator: a southern-hemisphere user in October is heading into
+  // spring, not autumn. Shift the month by six to model that rather than reporting a northern
+  // autumn to someone in Sydney.
+  const rawMonth = now.getMonth();
+  const month = lat < 0 ? (rawMonth + 6) % 12 : rawMonth;
+
   const springMultiplier = (month >= 2 && month <= 5) ? 1.5 : 0.8;
   const fallMultiplier = (month >= 7 && month <= 10) ? 1.6 : 0.7;
   const summerMultiplier = (month >= 4 && month <= 8) ? 1.4 : 0.8;
 
-  const rawTree = Math.min(95, Math.max(15, Math.round((35 + Math.abs(Math.sin(lat * 5)) * 40) * springMultiplier)));
-  const rawGrass = Math.min(95, Math.max(15, Math.round((30 + Math.abs(Math.cos(lng * 4)) * 35) * summerMultiplier)));
-  const rawWeed = Math.min(95, Math.max(15, Math.round((28 + Math.abs(Math.sin(lng * 7)) * 42) * fallMultiplier)));
-  const rawMold = Math.min(90, Math.max(12, Math.round(22 + Math.abs(Math.cos(lat * 3)) * 30)));
+  const rawTree = Math.min(95, Math.max(5, Math.round((35 + Math.abs(Math.sin(lat * 5)) * 40) * springMultiplier)));
+  const rawGrass = Math.min(95, Math.max(5, Math.round((30 + Math.abs(Math.cos(lng * 4)) * 35) * summerMultiplier)));
+  const rawWeed = Math.min(95, Math.max(5, Math.round((28 + Math.abs(Math.sin(lng * 7)) * 42) * fallMultiplier)));
+  const rawMold = Math.min(90, Math.max(5, Math.round(22 + Math.abs(Math.cos(lat * 3)) * 30)));
 
   const getPollenLevel = (val: number): 'Low' | 'Moderate' | 'High' | 'Very High' => {
     if (val >= 70) return 'Very High';
@@ -99,16 +116,15 @@ export function generateFallbackEnvData(
     }
   });
 
-  const overallScore = totalWeight > 0
+  const baseScore = totalWeight > 0
     ? Math.round(totalWeightedScore / totalWeight)
     : Math.round((rawTree + rawGrass + rawWeed + rawMold) / 4);
+  const overallScore = applySensitivity(baseScore, sensitivityFactor);
 
   let riskCategory: 'Low' | 'Moderate' | 'High' | 'Very High' = 'Low';
   if (overallScore >= 70) riskCategory = 'Very High';
   else if (overallScore >= 50) riskCategory = 'High';
   else if (overallScore >= 30) riskCategory = 'Moderate';
-
-  const aqiVal = Math.round(35 + Math.abs(Math.sin(lat * 10)) * 30);
 
   // This fallback runs entirely offline in the browser, so there's no way to look up the
   // selected location's real time zone. Be honest about it: show the device's own local time
@@ -121,13 +137,13 @@ export function generateFallbackEnvData(
   const forecast = [];
   for (let i = 0; i < 5; i++) {
     const dateObj = new Date(Date.now() + i * 86400000);
-    const dayName = i === 0 ? "Today" : i === 1 ? "Tomorrow" : dateObj.toLocaleDateString('en-US', { weekday: 'long' });
+    const dayName = i === 0 ? 'Today' : i === 1 ? 'Tomorrow' : dateObj.toLocaleDateString('en-US', { weekday: 'long' });
     const dateStr = dateObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 
-    const dayTree = Math.min(95, Math.max(10, Math.round(rawTree + (i * 2 - 3))));
-    const dayGrass = Math.min(95, Math.max(10, Math.round(rawGrass + (i * 3 - 4))));
-    const dayWeed = Math.min(95, Math.max(10, Math.round(rawWeed - (i * 2))));
-    const dayMold = Math.min(90, Math.max(10, Math.round(rawMold + (i * 2 - 2))));
+    const dayTree = Math.min(95, Math.max(5, Math.round(rawTree + (i * 2 - 3))));
+    const dayGrass = Math.min(95, Math.max(5, Math.round(rawGrass + (i * 3 - 4))));
+    const dayWeed = Math.min(95, Math.max(5, Math.round(rawWeed - (i * 2))));
+    const dayMold = Math.min(90, Math.max(5, Math.round(rawMold + (i * 2 - 2))));
     const dayOverall = Math.round((dayTree + dayGrass + dayWeed + dayMold) / 4);
 
     forecast.push({
@@ -139,33 +155,33 @@ export function generateFallbackEnvData(
       grass: dayGrass,
       weed: dayWeed,
       mold: dayMold,
-      dominantAllergen: rawWeed > rawTree && rawWeed > rawGrass ? "Ragweed" : rawTree > rawGrass ? "Oak Tree" : "Bermuda Grass",
+      dominantAllergen: rawWeed > rawTree && rawWeed > rawGrass ? 'Ragweed' : rawTree > rawGrass ? 'Oak Tree' : 'Bermuda Grass',
     });
   }
 
+  const recommendations: string[] = [];
+  if (riskCategory === 'Very High' || riskCategory === 'High') {
+    recommendations.push('Estimated risk is high for your profile. Keep windows closed and use air conditioning on recirculate.');
+  } else if (riskCategory === 'Moderate') {
+    recommendations.push('Estimated risk is moderate. Check the forecast before planning long outdoor activity.');
+  } else {
+    recommendations.push('Estimated risk is low for your profile today.');
+  }
+  recommendations.push('Shower and change clothes after returning from prolonged outdoor exposure.');
+  recommendations.push('These suggestions are based on a seasonal estimate — reconnect for live readings.');
+
   return {
-    locationName: locationName.split(',')[0] || "Austin",
+    locationName: locationName.split(',')[0] || 'this location',
     updatedAt: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     timeZoneAbbr,
-    timeZoneNote: `Live time zone data for ${locationName.split(',')[0] || 'this location'} is unavailable right now — showing your device's local time (${deviceTimeZone}) instead.`,
-    dataSource: "Seasonal Atmospheric Model",
-    weather: {
-      temperatureF: 76,
-      humidityPct: 52,
-      apparentTempF: 77,
-      windSpeedMph: 8,
-      windDirection: "SSE",
-      weatherDescription: "Partly cloudy",
-    },
+    timeZoneNote: `Live data for ${locationName.split(',')[0] || 'this location'} is unavailable right now — showing your device's local time (${deviceTimeZone}) and a seasonal estimate instead.`,
+    dataSource: 'Seasonal Atmospheric Model (offline estimate)',
+    pollenDataSource: 'Seasonal Atmospheric Model (offline estimate)',
+    pollenIsModeled: true,
+    // No `weather` and no `aqi`: neither can be estimated from a browser with no network, and
+    // inventing plausible figures is worse than showing none.
     overallPersonalRiskScore: overallScore,
     riskCategory,
-    aqi: {
-      aqi: aqiVal,
-      category: aqiVal > 100 ? 'Unhealthy for Sensitive' : aqiVal > 50 ? 'Moderate' : 'Good',
-      pm25: Number((aqiVal * 0.28).toFixed(1)),
-      pm10: Number((aqiVal * 0.45).toFixed(1)),
-      ozone: Number((aqiVal * 0.32).toFixed(1)),
-    },
     pollen: {
       tree: {
         level: getPollenLevel(rawTree),
@@ -193,13 +209,7 @@ export function generateFallbackEnvData(
       },
     },
     matchedActiveAllergens,
-    recommendations: [
-      riskCategory === 'High' || riskCategory === 'Very High'
-        ? "Keep windows closed today and use air conditioning on recirculate."
-        : "Moderate allergen risk today. Check forecast before planning long outdoor runs.",
-      "Shower and change clothes after returning from prolonged outdoor exposure.",
-      "Use saline nasal rinse following outdoor walks to clear settled allergens.",
-    ],
+    recommendations,
     forecast,
   };
 }

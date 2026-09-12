@@ -6,6 +6,7 @@ import {
   NotificationSettings,
   AppNotification
 } from '../types';
+import { MAX_NOTIFICATIONS } from './notifications';
 
 const STORAGE_KEYS = {
   PROFILE: 'allerscan_profile_v1',
@@ -15,6 +16,13 @@ const STORAGE_KEYS = {
   SETTINGS: 'allerscan_settings_v1',
   NOTIFS: 'allerscan_notifs_v1',
 };
+
+/**
+ * Scan results carry their photo inline as a data URL, so the history is by far the largest
+ * thing in localStorage. Capping it keeps the app inside the ~5 MB budget; photos are also
+ * downscaled before they get here (see ScanView).
+ */
+export const MAX_STORED_SCANS = 24;
 
 export const DEFAULT_PROFILE: UserAllergenProfile = {
   allergens: {},
@@ -71,11 +79,17 @@ export function loadStoredData<T>(key: string, fallback: T): T {
   return fallback;
 }
 
-export function saveStoredData<T>(key: string, data: T): void {
+/**
+ * Returns false when the write didn't happen (quota exhausted, private-mode restrictions) so the
+ * caller can tell the user rather than showing data as saved that will be gone on reload.
+ */
+export function saveStoredData<T>(key: string, data: T): boolean {
   try {
     localStorage.setItem(key, JSON.stringify(data));
+    return true;
   } catch (e) {
     console.error(`Error saving localStorage key ${key}:`, e);
+    return false;
   }
 }
 
@@ -90,11 +104,12 @@ export const StorageService = {
   saveSymptoms: (s: SymptomLog[]) => saveStoredData(STORAGE_KEYS.SYMPTOMS, s),
 
   getScans: () => loadStoredData<ScanResult[]>(STORAGE_KEYS.SCANS, INITIAL_SCANS),
-  saveScans: (s: ScanResult[]) => saveStoredData(STORAGE_KEYS.SCANS, s),
+  saveScans: (s: ScanResult[]) => saveStoredData(STORAGE_KEYS.SCANS, s.slice(0, MAX_STORED_SCANS)),
 
   getSettings: () => loadStoredData<NotificationSettings>(STORAGE_KEYS.SETTINGS, DEFAULT_SETTINGS),
   saveSettings: (s: NotificationSettings) => saveStoredData(STORAGE_KEYS.SETTINGS, s),
 
   getNotifications: () => loadStoredData<AppNotification[]>(STORAGE_KEYS.NOTIFS, INITIAL_NOTIFICATIONS),
-  saveNotifications: (n: AppNotification[]) => saveStoredData(STORAGE_KEYS.NOTIFS, n),
+  saveNotifications: (n: AppNotification[]) =>
+    saveStoredData(STORAGE_KEYS.NOTIFS, n.slice(0, MAX_NOTIFICATIONS)),
 };
