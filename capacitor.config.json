@@ -4,8 +4,7 @@
   "webDir": "dist",
   "bundledWebRuntime": false,
   "server": {
-    "androidScheme": "https",
-    "cleartext": true
+    "androidScheme": "https"
   },
   "plugins": {
     "SplashScreen": {
@@ -13,10 +12,15 @@
       "backgroundColor": "#090d16"
     },
     "Camera": {
-      "permissions": ["camera", "photos"]
+      "permissions": [
+        "camera",
+        "photos"
+      ]
     },
     "Geolocation": {
-      "permissions": ["location"]
+      "permissions": [
+        "location"
+      ]
     }
   }
 }

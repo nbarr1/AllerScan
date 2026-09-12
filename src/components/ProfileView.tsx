@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import {
   UserCheck,
   Plus,
-  Check,
   Trash2,
   Trees,
   Wheat,
@@ -10,10 +9,19 @@ import {
   Biohazard,
   Home,
   Sliders,
+  Gauge,
   Download
 } from 'lucide-react';
 import { MASTER_ALLERGENS, ALLERGEN_CATEGORIES } from '../data/allergensDatabase';
 import { UserAllergenProfile, SeverityLevel, AllergenCategory, CustomAllergenMeta } from '../types';
+
+// Sensitivity used to be a stored field nothing read. It now scales the personal risk score
+// server-side (and in the offline estimate); 2 is neutral.
+const SENSITIVITY_OPTIONS = [
+  { value: 1, label: 'Less reactive', description: 'Symptoms start later than most people' },
+  { value: 2, label: 'Typical', description: 'React around the usual thresholds' },
+  { value: 3, label: 'Highly reactive', description: 'Symptoms start at lower pollen levels' },
+];
 
 interface ProfileViewProps {
   userProfile: UserAllergenProfile;
@@ -27,6 +35,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   const [activeCategory, setActiveCategory] = useState<AllergenCategory>('tree');
   const [customName, setCustomName] = useState('');
   const [customCat, setCustomCat] = useState<AllergenCategory>('indoor');
+  const [customError, setCustomError] = useState<string | null>(null);
 
   const categoryIcons: Record<AllergenCategory, React.ElementType> = {
     tree: Trees,
@@ -52,10 +61,27 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   };
 
   const handleAddCustom = () => {
-    if (!customName.trim()) return;
-    const cleanId = 'custom_' + customName.toLowerCase().trim().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '');
-    if (!cleanId || cleanId === 'custom_') return;
+    const trimmed = customName.trim();
+    if (!trimmed) {
+      setCustomError('Give the trigger a name first.');
+      return;
+    }
 
+    const cleanId = 'custom_' + trimmed.toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '');
+    if (cleanId === 'custom_') {
+      setCustomError('Use letters or numbers in the name so it can be saved.');
+      return;
+    }
+    if (userProfile.allergens[cleanId]) {
+      setCustomError(`"${trimmed}" is already one of your triggers.`);
+      return;
+    }
+    if (MASTER_ALLERGENS.some((item) => item.name.toLowerCase() === trimmed.toLowerCase())) {
+      setCustomError(`"${trimmed}" is already in the built-in database — add it from the list above for species-level data.`);
+      return;
+    }
+
+    setCustomError(null);
     const allergensCopy = { ...userProfile.allergens, [cleanId]: 'moderate' as SeverityLevel };
     const customCopy: Record<string, CustomAllergenMeta> = {
       ...(userProfile.customAllergens || {}),
@@ -101,6 +127,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
         </div>
 
         <button
+          type="button"
           onClick={exportProfileJson}
           className="px-4 py-2 border border-slate-200 hover:bg-slate-50 text-slate-700 font-bold text-xs rounded-xl flex items-center gap-1.5"
         >
@@ -109,13 +136,54 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
         </button>
       </div>
 
+      {/* REACTION SENSITIVITY */}
+      <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-xs space-y-3">
+        <h2 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
+          <Gauge className="w-4 h-4 text-emerald-600" aria-hidden="true" /> Reaction Sensitivity
+        </h2>
+        <p className="text-[11px] text-slate-500">
+          How strongly you react compared with a typical allergy sufferer at the same pollen level.
+          This adjusts your personal risk score — it doesn't change the underlying pollen readings.
+        </p>
+
+        <fieldset>
+          <legend className="sr-only">Reaction sensitivity</legend>
+          <div className="grid grid-cols-3 gap-2">
+            {SENSITIVITY_OPTIONS.map((option) => {
+              const isActive = (userProfile.sensitivityFactor || 2) === option.value;
+              return (
+                <button
+                  type="button"
+                  key={option.value}
+                  aria-pressed={isActive}
+                  onClick={() => onUpdateProfile({ ...userProfile, sensitivityFactor: option.value })}
+                  className={`p-3 rounded-2xl border text-left transition-all ${
+                    isActive
+                      ? 'bg-emerald-600 border-emerald-600 text-white shadow-md shadow-emerald-600/20'
+                      : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
+                  }`}
+                >
+                  <span className="text-xs font-extrabold block">{option.label}</span>
+                  <span className={`text-[11px] block mt-0.5 ${isActive ? 'text-emerald-50' : 'text-slate-500'}`}>
+                    {option.description}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </fieldset>
+      </div>
+
       {/* CATEGORY SELECTOR TABS */}
-      <div className="flex gap-2 overflow-x-auto pb-1">
+      <div className="flex gap-2 overflow-x-auto pb-1" role="tablist" aria-label="Allergen categories">
         {ALLERGEN_CATEGORIES.map((cat) => {
           const Icon = categoryIcons[cat.key as AllergenCategory];
           const isActive = activeCategory === cat.key;
           return (
             <button
+              type="button"
+              role="tab"
+              aria-selected={isActive}
               key={cat.key}
               onClick={() => setActiveCategory(cat.key as AllergenCategory)}
               className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-extrabold whitespace-nowrap transition-all border ${
@@ -143,7 +211,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
               className={`p-4 rounded-3xl border transition-all ${
                 isSelected
                   ? 'bg-white border-emerald-400 shadow-sm ring-1 ring-emerald-400/20'
-                  : 'bg-slate-50 border-slate-200 opacity-75 hover:opacity-100'
+                  : 'bg-slate-50 border-slate-200 hover:border-slate-300'
               }`}
             >
               <div className="flex justify-between items-start mb-2">
@@ -153,6 +221,8 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                 </div>
 
                 <button
+                  type="button"
+                  aria-pressed={isSelected}
                   onClick={() => handleToggleAllergen(item.id)}
                   className={`px-3 py-1 text-xs font-bold rounded-xl border transition-colors ${
                     isSelected
@@ -172,7 +242,9 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                   <div className="grid grid-cols-3 gap-1.5">
                     {(['mild', 'moderate', 'severe'] as SeverityLevel[]).map((sev) => (
                       <button
+                        type="button"
                         key={sev}
+                        aria-pressed={currentSev === sev}
                         onClick={() => handleSeverityChange(item.id, sev)}
                         className={`py-1 text-xs font-bold capitalize rounded-lg border transition-all ${
                           currentSev === sev
@@ -222,9 +294,10 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                     </div>
 
                     <button
+                      type="button"
                       onClick={() => handleRemoveCustom(id)}
                       className="p-1.5 text-rose-500 hover:bg-rose-50 rounded-lg border border-rose-200 transition-colors"
-                      title="Remove custom trigger"
+                      aria-label={`Remove custom trigger ${meta.name}`}
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
@@ -237,7 +310,9 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                     <div className="grid grid-cols-3 gap-1.5">
                       {(['mild', 'moderate', 'severe'] as SeverityLevel[]).map((sev) => (
                         <button
+                          type="button"
                           key={sev}
+                          aria-pressed={currentSev === sev}
                           onClick={() => handleSeverityChange(id, sev)}
                           className={`py-1 text-xs font-bold capitalize rounded-lg border transition-all ${
                             currentSev === sev
@@ -270,32 +345,55 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
           Custom triggers are estimated using their category's regional pollen index (e.g. a custom tree trigger uses the local tree pollen level) since AllerScan has no species-specific data for them.
         </p>
 
-        <div className="flex flex-col sm:flex-row gap-2">
-          <input
-            type="text"
-            value={customName}
-            onChange={(e) => setCustomName(e.target.value)}
-            placeholder="e.g. Cedar Elm, Mountain Pine, Cedar Fever..."
-            className="flex-1 px-3.5 py-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500"
-          />
-          <select
-            value={customCat}
-            onChange={(e: any) => setCustomCat(e.target.value)}
-            className="px-3 py-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl"
-          >
-            <option value="tree">Tree</option>
-            <option value="grass">Grass</option>
-            <option value="weed">Weed</option>
-            <option value="mold">Mold</option>
-            <option value="indoor">Indoor / Other</option>
-          </select>
+        <form
+          className="flex flex-col sm:flex-row gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            handleAddCustom();
+          }}
+        >
+          <div className="flex-1">
+            <label htmlFor="custom-trigger-name" className="sr-only">Custom trigger name</label>
+            <input
+              id="custom-trigger-name"
+              type="text"
+              value={customName}
+              onChange={(e) => {
+                setCustomName(e.target.value);
+                if (customError) setCustomError(null);
+              }}
+              placeholder="e.g. Cedar Elm, Mountain Pine, Cedar Fever…"
+              className="w-full px-3.5 py-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            />
+          </div>
+          <div>
+            <label htmlFor="custom-trigger-category" className="sr-only">Custom trigger category</label>
+            <select
+              id="custom-trigger-category"
+              value={customCat}
+              onChange={(e) => setCustomCat(e.target.value as AllergenCategory)}
+              className="w-full px-3 py-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl"
+            >
+              <option value="tree">Tree</option>
+              <option value="grass">Grass</option>
+              <option value="weed">Weed</option>
+              <option value="mold">Mold</option>
+              <option value="indoor">Indoor / Other</option>
+            </select>
+          </div>
           <button
-            onClick={handleAddCustom}
+            type="submit"
             className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-xs"
           >
             Add Trigger
           </button>
-        </div>
+        </form>
+
+        {customError && (
+          <p role="alert" className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5">
+            {customError}
+          </p>
+        )}
       </div>
 
     </div>

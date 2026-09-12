@@ -32,7 +32,9 @@ export interface UserAllergenProfile {
     lat: number;
     lng: number;
   };
-  sensitivityFactor: number; // 1 to 3 modifier
+  // 1 (less reactive than typical) to 3 (more reactive). Sent to /api/pollen-aqi and
+  // applied to the personal risk score; 2 is neutral.
+  sensitivityFactor: number;
   onboarded: boolean;
 }
 
@@ -81,11 +83,21 @@ export interface EnvironmentalData {
   // location's actual time zone (e.g. live geocoding/timezone lookup failed), so the UI
   // can disclose exactly what time zone is being shown instead of silently mismatching.
   timeZoneNote?: string;
+  // Where the weather/AQI figures came from. Tracked separately from `pollenDataSource`
+  // because the two can disagree: Open-Meteo's weather call can succeed for a point its
+  // pollen sensors don't cover, and a "Live" label over modelled pollen would be a lie.
   dataSource?: string;
+  // Where the tree/grass/weed/mold index numbers actually came from.
+  pollenDataSource?: string;
+  // True when the pollen numbers are a seasonal/geographic estimate rather than a reading,
+  // so the UI can label them without string-matching the source name.
+  pollenIsModeled?: boolean;
   weather?: LiveWeatherData;
   overallPersonalRiskScore: number; // 0 - 100
   riskCategory: 'Low' | 'Moderate' | 'High' | 'Very High';
-  aqi: AirQualityData;
+  // Absent when no live air-quality reading was available. The offline estimate omits it rather
+  // than deriving a plausible-looking AQI from coordinates.
+  aqi?: AirQualityData;
   pollen: {
     tree: PollenCategoryScore;
     grass: PollenCategoryScore;
@@ -106,16 +118,22 @@ export interface EnvironmentalData {
 
 export interface ScanResult {
   id: string;
+  // ISO 8601 instant. Formatted for display at render time — an entry stored as
+  // "10:42 AM Today" still claims to be from today a week later.
   timestamp: string;
   imageUrl: string;
   speciesName: string;
   scientificName: string;
   category: AllergenCategory | 'non_allergen';
-  confidence: number; // 0 - 100 percentage
+  // Omitted when the identifying model didn't report one. Never substitute a plausible
+  // default: a made-up "88%" reads as a measurement.
+  confidence?: number; // 0 - 100 percentage
   isUserAllergen: boolean;
   matchedAllergenId?: string;
   userSeverity?: SeverityLevel;
   details: string;
+  // Empty when the model didn't report any; the UI omits the section rather than
+  // inventing generic botanical filler.
   identifyingFeatures: string[];
   locationStr: string;
   isSimulatedResult?: boolean; // true when Gemini vision was unavailable and a fallback example was returned instead of real analysis
@@ -197,7 +215,12 @@ export interface PollenHotspot {
   grassPollen: number;
   weedPollen: number;
   moldCount: number;
-  aqi: number;
+  // Omitted when the live weather/air-quality feed didn't answer for this area. Absent is
+  // honest; a default 75 °F reads as a measurement.
+  aqi?: number;
+  // A regional default name for the dominant category, not a measured species — live
+  // sources report a category index, not per-point species. The UI must present it as a
+  // category-level label, and name `matchedUserAllergen` when calling something a match.
   dominantSpecies: string;
   dominantCategory: AllergenCategory;
   // Where this location's pollen reading actually came from (e.g. "Live Google Maps Pollen
@@ -206,10 +229,10 @@ export interface PollenHotspot {
   isProfileMatch: boolean;
   matchedUserAllergen?: string;
   userSeverity?: SeverityLevel;
-  windSpeedMph: number;
-  windDirection: string;
-  temperatureF: number;
-  humidityPct: number;
+  windSpeedMph?: number;
+  windDirection?: string;
+  temperatureF?: number;
+  humidityPct?: number;
   advisory: string;
 }
 

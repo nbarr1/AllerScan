@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>AllerScan - Pollen AQI & Allergy AI</title>
     <meta name="description" content="Personal Allergen Scanner & Air Quality Tracker with AI Plant Scanning, Pollen AQI Radar, and Immunotherapy Shot Reminders." />
 
@@ -14,7 +14,7 @@
 
     <!-- Android & PWA Meta Tags -->
     <meta name="mobile-web-app-capable" content="yes" />
-    <meta name="theme-color" content="#064e3b" />
+    <meta name="theme-color" content="#059669" />
     <link rel="manifest" href="/manifest.json" />
     <link rel="icon" type="image/svg+xml" href="/icon-192.svg" />
 
@@ -22,8 +22,14 @@
     <meta property="og:description" content="Personal Allergen Scanner, Air Quality Tracker & Immunotherapy Manager" />
     <meta property="og:type" content="website" />
   </head>
-  <body class="bg-slate-950 text-slate-100 antialiased selection:bg-emerald-500 selection:text-white select-none">
+  <body class="bg-slate-100 text-slate-900 antialiased selection:bg-emerald-500 selection:text-white">
     <div id="root"></div>
+    <noscript>
+      <div style="font-family: system-ui, sans-serif; padding: 2rem; max-width: 34rem; margin: 0 auto; color: #0f172a;">
+        <h1 style="font-size: 1.25rem;">AllerScan needs JavaScript</h1>
+        <p>Enable JavaScript to load live pollen and air quality data for your location.</p>
+      </div>
+    </noscript>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

@@ -4,14 +4,20 @@ import path from "path";
 import { GoogleGenAI, Type } from "@google/genai";
 import { DEFAULT_CITY_OPTIONS } from "./src/data/defaultCities.js";
 import { MASTER_ALLERGENS } from "./src/data/allergensDatabase.js";
+import { applySensitivity } from "./src/utils/sensitivity.js";
+import { emptySafeTable, withSafeKeys } from "./src/utils/safeKeys.js";
 
 // Category/name lookups for the built-in allergen database, shared by routes below that need
 // to match a real live pollen reading's dominant category against the user's saved allergens.
-const ALLERGEN_CATEGORY_BY_ID: Record<string, string> = Object.fromEntries(
-  MASTER_ALLERGENS.map((a) => [a.id, a.category])
+// Null-prototype: these are indexed with ids that came from a request, and a plain object would
+// answer `table["constructor"]` with an inherited function that passes a truthy guard.
+const ALLERGEN_CATEGORY_BY_ID: Record<string, string> = Object.assign(
+  emptySafeTable<string>(),
+  Object.fromEntries(MASTER_ALLERGENS.map((a) => [a.id, a.category]))
 );
-const ALLERGEN_NAME_BY_ID: Record<string, string> = Object.fromEntries(
-  MASTER_ALLERGENS.map((a) => [a.id, a.name])
+const ALLERGEN_NAME_BY_ID: Record<string, string> = Object.assign(
+  emptySafeTable<string>(),
+  Object.fromEntries(MASTER_ALLERGENS.map((a) => [a.id, a.name]))
 );
 
 const app = express();
@@ -26,7 +32,40 @@ function injectRuntimeConfig(html: string): string {
   return html.replace("</head>", `${script}</head>`);
 }
 
-app.use(express.json({ limit: "25mb" }));
+// Only the scan endpoint receives large payloads (a base64 photo). Everything else gets the
+// default limit, so an oversized body can't be posted at any other route.
+const scanBodyParser = express.json({ limit: "25mb" });
+app.use(express.json({ limit: "100kb" }));
+
+// A small in-memory response cache. Without it, two people in the same city — or one person
+// tapping refresh — each trigger the full upstream fan-out (up to 15 calls for the hotspots
+// route). Values are short-lived because pollen indices move hourly at most.
+const responseCache = new Map<string, { expires: number; payload: unknown }>();
+const CACHE_MAX_ENTRIES = 200;
+
+function cacheGet<T>(key: string): T | null {
+  const hit = responseCache.get(key);
+  if (!hit) return null;
+  if (hit.expires < Date.now()) {
+    responseCache.delete(key);
+    return null;
+  }
+  return hit.payload as T;
+}
+
+function cacheSet(key: string, payload: unknown, ttlMs: number): void {
+  if (responseCache.size >= CACHE_MAX_ENTRIES) {
+    // Cheap eviction: drop whatever the iterator yields first (insertion order).
+    const oldest = responseCache.keys().next();
+    if (!oldest.done) responseCache.delete(oldest.value);
+  }
+  responseCache.set(key, { expires: Date.now() + ttlMs, payload });
+}
+
+/** Rounds coordinates so nearby requests share a cache entry (~1 km at the equator). */
+function coordKey(lat: number, lng: number): string {
+  return `${lat.toFixed(2)},${lng.toFixed(2)}`;
+}
 
 // Initialize Google GenAI client lazily or safely
 function getGenAI() {
@@ -45,12 +84,54 @@ function getGenAI() {
 // ------------------- API ROUTES -------------------
 
 // 1. Plant / Mold / Environmental Scanner endpoint
-app.post("/api/scan", async (req, res) => {
+// Hosts the preset sample images are served from. The imageUrl branch exists only for those;
+// fetching an arbitrary caller-supplied URL would let anyone use this server to reach private
+// addresses (cloud metadata endpoints, localhost services) it can see and they can't.
+//
+// Validating the caller's string and then fetching that same string still hands an
+// attacker-controlled value to fetch(): it is only safe for as long as `new URL()` and the fetch
+// implementation agree about how to parse a hostile URL, and that class of parser differential is
+// exactly how allowlists get bypassed. So the host that reaches fetch() is never the caller's —
+// the origin below is a literal, and only the path and query survive from the request.
+//
+// Written as an explicit conditional over string literals rather than a lookup table: with two
+// hosts it is just as readable, there is no computed property access to get wrong, and the
+// constant origin is obvious to a reader and to static analysis alike.
+function resolveAllowedImageUrl(rawUrl: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "https:") return null;
+
+  const host = parsed.hostname.toLowerCase();
+  const path = `${parsed.pathname}${parsed.search}`;
+
+  if (host === "images.unsplash.com") return `https://images.unsplash.com${path}`;
+  if (host === "plus.unsplash.com") return `https://plus.unsplash.com${path}`;
+  return null;
+}
+
+app.post("/api/scan", scanBodyParser, async (req, res) => {
   try {
     const { imageBase64, imageUrl, presetHint } = req.body;
 
     if (!imageBase64 && !imageUrl && !presetHint) {
       return res.status(400).json({ error: "Missing image payload (imageBase64 or imageUrl required)." });
+    }
+
+    // Resolved up front so the guard doesn't depend on whether a Gemini key happens to be set.
+    // Everything downstream uses `resolvedImageUrl`, never the caller's `imageUrl`.
+    let resolvedImageUrl: string | null = null;
+    if (imageUrl) {
+      resolvedImageUrl = resolveAllowedImageUrl(imageUrl);
+      if (!resolvedImageUrl) {
+        return res.status(400).json({
+          error: "That image URL isn't allowed. Send the image as base64 instead.",
+        });
+      }
     }
 
     // If a preset hint is provided, return rich verified botanical data immediately
@@ -78,11 +159,17 @@ app.post("/api/scan", async (req, res) => {
               mimeType,
             },
           };
-        } else if (imageUrl) {
-          const imgResp = await fetch(imageUrl);
+        } else if (resolvedImageUrl) {
+          const imgResp = await fetchWithTimeout(resolvedImageUrl, {}, 4000);
+          if (!imgResp || !imgResp.ok) {
+            throw new Error("Could not download the preset image");
+          }
+          const contentType = imgResp.headers.get("content-type") || "image/jpeg";
+          if (!contentType.startsWith("image/")) {
+            throw new Error("The preset URL did not return an image");
+          }
           const arrayBuffer = await imgResp.arrayBuffer();
           const base64Str = Buffer.from(arrayBuffer).toString("base64");
-          const contentType = imgResp.headers.get("content-type") || "image/jpeg";
           imagePart = {
             inlineData: {
               data: base64Str,
@@ -100,8 +187,11 @@ Identify the primary plant, weed, tree, or mold species visible in the image.
 Determine if it is a known allergen producer.
 Respond strictly with valid JSON.`;
 
-        // Resilience: Iterate through candidate vision models if one is under 503 high demand
-        const candidateModels = ["gemini-3.7-flash", "gemini-flash-latest", "gemini-3.1-flash-lite"];
+        // Candidates in preference order. The floating alias goes first so this keeps working
+        // as Google's catalogue moves; the pinned id is the fallback. Verify these against the
+        // current model list before changing them — an id that doesn't exist costs a failed
+        // round trip on every single scan.
+        const candidateModels = ["gemini-flash-latest", "gemini-2.5-flash"];
 
         for (const modelName of candidateModels) {
           try {
@@ -151,9 +241,24 @@ Respond strictly with valid JSON.`;
             }
           } catch (geminiErr: any) {
             const errMsg = geminiErr?.message || String(geminiErr);
-            const isDemandSpike = errMsg.includes("503") || errMsg.includes("high demand") || errMsg.includes("UNAVAILABLE") || errMsg.includes("429");
+            const isDemandSpike =
+              errMsg.includes("503") ||
+              errMsg.includes("high demand") ||
+              errMsg.includes("UNAVAILABLE") ||
+              errMsg.includes("429");
+            const isPermanent =
+              errMsg.includes("404") ||
+              errMsg.includes("NOT_FOUND") ||
+              errMsg.includes("PERMISSION_DENIED") ||
+              errMsg.includes("API key not valid");
+
             if (isDemandSpike) {
-              console.warn(`[Gemini API] ${modelName} temporarily at capacity (503/429), trying next candidate model...`);
+              console.warn(`[Gemini API] ${modelName} temporarily at capacity, trying the next candidate...`);
+            } else if (isPermanent) {
+              // A missing model or a bad key is a configuration error, not a capacity blip.
+              // Retrying the rest of the list just burns latency on every request.
+              console.error(`[Gemini API] ${modelName} is unavailable to this key (configuration error):`, errMsg);
+              break;
             } else {
               console.warn(`[Gemini API] Error calling ${modelName}:`, errMsg);
             }
@@ -201,7 +306,7 @@ Respond strictly with valid JSON.`;
     });
   } catch (err: any) {
     console.error("Scan endpoint error:", err);
-    res.status(500).json({ error: err.message || "Failed to process photo scan." });
+    res.status(500).json({ error: "Failed to process the photo scan. Try again in a moment." });
   }
 });
 
@@ -219,6 +324,33 @@ async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutM
     return null;
   } finally {
     clearTimeout(timer);
+  }
+}
+
+/**
+ * A JSON fetch whose parsed body is cached by key. Caching the upstream calls rather than the
+ * finished responses means two people in the same city share one round trip to Open-Meteo while
+ * each still gets a response personalised to their own allergen profile.
+ */
+async function cachedJsonFetch(
+  cacheKey: string,
+  url: string,
+  options: RequestInit = {},
+  timeoutMs = 2500,
+  ttlMs = 10 * 60 * 1000
+): Promise<any | null> {
+  const cached = cacheGet<any>(cacheKey);
+  if (cached !== null) return cached;
+
+  const resp = await fetchWithTimeout(url, options, timeoutMs);
+  if (!resp || !resp.ok) return null;
+
+  try {
+    const data = await resp.json();
+    cacheSet(cacheKey, data, ttlMs);
+    return data;
+  } catch {
+    return null;
   }
 }
 
@@ -281,14 +413,13 @@ async function fetchLivePollenIndexAt(
 }> {
   const googlePollenKey = process.env.GOOGLE_POLLEN_API_KEY;
   const humidityFactor = currentHumidity > 60 ? (currentHumidity - 50) * 0.8 : 10;
-  const moldVal = Math.min(90, Math.max(12, Math.round(15 + humidityFactor + (currentTemp > 70 ? 12 : 0))));
+  const moldVal = Math.min(90, Math.max(5, Math.round(15 + humidityFactor + (currentTemp > 70 ? 12 : 0))));
 
   if (googlePollenKey) {
     try {
       const gUrl = `https://pollen.googleapis.com/v1/forecast:lookup?location.longitude=${lng}&location.latitude=${lat}&key=${googlePollenKey}&days=1`;
-      const gResp = await fetchWithTimeout(gUrl, {}, 2200);
-      if (gResp && gResp.ok) {
-        const gData = await gResp.json();
+      const gData = await cachedJsonFetch(`gpollen1:${coordKey(lat, lng)}`, gUrl, {}, 2200);
+      if (gData) {
         const todayInfo = gData?.dailyInfo?.[0];
         if (todayInfo?.pollenTypeInfo?.length) {
           let treeVal = 15, grassVal = 15, weedVal = 15;
@@ -309,9 +440,13 @@ async function fetchLivePollenIndexAt(
 
   try {
     const aqiUrl = `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${lat}&longitude=${lng}&current=alder_pollen,birch_pollen,grass_pollen,mugwort_pollen,olive_pollen,ragweed_pollen`;
-    const aqiResp = await fetchWithTimeout(aqiUrl, { headers: { "User-Agent": "AllerScan-App/1.0" } }, 2200);
-    if (aqiResp && aqiResp.ok) {
-      const aqData = await aqiResp.json();
+    const aqData = await cachedJsonFetch(
+      `pointpollen:${coordKey(lat, lng)}`,
+      aqiUrl,
+      { headers: { "User-Agent": "AllerScan-App/1.0" } },
+      2200
+    );
+    if (aqData) {
       const c = aqData?.current;
       if (c) {
         const rawTree = (c.birch_pollen ?? 0) + (c.alder_pollen ?? 0) + (c.olive_pollen ?? 0);
@@ -320,9 +455,9 @@ async function fetchLivePollenIndexAt(
         if (rawTree > 0 || rawGrass > 0 || rawWeed > 0) {
           const windMultiplier = Math.min(1.4, Math.max(0.8, 1 + (currentWindSpeed - 8) * 0.03));
           return {
-            treeVal: Math.min(100, Math.max(10, Math.round(rawTree * 2.5 * windMultiplier))),
-            grassVal: Math.min(100, Math.max(10, Math.round(rawGrass * 3.2 * windMultiplier))),
-            weedVal: Math.min(100, Math.max(10, Math.round(rawWeed * 2.8 * windMultiplier))),
+            treeVal: Math.min(100, Math.max(0, Math.round(rawTree * 2.5 * windMultiplier))),
+            grassVal: Math.min(100, Math.max(0, Math.round(rawGrass * 3.2 * windMultiplier))),
+            weedVal: Math.min(100, Math.max(0, Math.round(rawWeed * 2.8 * windMultiplier))),
             moldVal,
             source: 'Live Open-Meteo Pollen Sensors',
             grains: {
@@ -338,14 +473,16 @@ async function fetchLivePollenIndexAt(
     console.warn("Open-Meteo pollen sensor lookup error in hotspots:", err);
   }
 
-  const month = new Date().getMonth();
+  // Seasons invert below the equator.
+  const rawMonth = new Date().getMonth();
+  const month = lat < 0 ? (rawMonth + 6) % 12 : rawMonth;
   const springMultiplier = (month >= 2 && month <= 5) ? 1.5 : 0.8;
   const fallMultiplier = (month >= 7 && month <= 10) ? 1.6 : 0.7;
   const summerMultiplier = (month >= 4 && month <= 8) ? 1.4 : 0.8;
   return {
-    treeVal: Math.min(95, Math.max(15, Math.round((35 + Math.abs(Math.sin(lat * 5)) * 40) * springMultiplier))),
-    grassVal: Math.min(95, Math.max(15, Math.round((30 + Math.abs(Math.cos(lng * 4)) * 35) * summerMultiplier))),
-    weedVal: Math.min(95, Math.max(15, Math.round((28 + Math.abs(Math.sin(lng * 7)) * 42) * fallMultiplier))),
+    treeVal: Math.min(95, Math.max(5, Math.round((35 + Math.abs(Math.sin(lat * 5)) * 40) * springMultiplier))),
+    grassVal: Math.min(95, Math.max(5, Math.round((30 + Math.abs(Math.cos(lng * 4)) * 35) * summerMultiplier))),
+    weedVal: Math.min(95, Math.max(5, Math.round((28 + Math.abs(Math.sin(lng * 7)) * 42) * fallMultiplier))),
     moldVal,
     source: 'Atmospheric & Seasonal Pollen Model',
   };
@@ -409,11 +546,17 @@ app.get("/api/pollen-aqi", async (req, res) => {
 
   if (userAllergensJson) {
     try {
-      userAllergens = JSON.parse(userAllergensJson);
+      // Ids become computed property keys on the lookup tables below — see utils/safeKeys.
+      userAllergens = withSafeKeys(JSON.parse(userAllergensJson));
     } catch {
       // ignore parse error
     }
   }
+
+  // 1 (less reactive) to 3 (more reactive); 2 is neutral. Previously stored in the profile and
+  // read by nothing.
+  const parsedSensitivity = Number(req.query.sensitivityFactor);
+  const sensitivityFactor = Number.isFinite(parsedSensitivity) ? parsedSensitivity : 2;
 
   // Metadata (display name + category) for user-added custom allergens, which have no
   // entry in the built-in allergen database and so can't be resolved by ID alone.
@@ -422,7 +565,7 @@ app.get("/api/pollen-aqi", async (req, res) => {
 
   if (customAllergensJson) {
     try {
-      customAllergens = JSON.parse(customAllergensJson);
+      customAllergens = withSafeKeys(JSON.parse(customAllergensJson));
     } catch {
       // ignore parse error
     }
@@ -475,10 +618,7 @@ app.get("/api/pollen-aqi", async (req, res) => {
     if (googlePollenKey) {
       try {
         const gUrl = `https://pollen.googleapis.com/v1/forecast:lookup?location.longitude=${lng}&location.latitude=${lat}&key=${googlePollenKey}&days=5`;
-        const gResp = await fetchWithTimeout(gUrl, {}, 2500);
-        if (gResp && gResp.ok) {
-          googlePollenData = await gResp.json();
-        }
+        googlePollenData = await cachedJsonFetch(`gpollen5:${coordKey(lat, lng)}`, gUrl, {}, 2500);
       } catch (gErr) {
         console.warn("Google Pollen API lookup error:", gErr);
       }
@@ -488,29 +628,20 @@ app.get("/api/pollen-aqi", async (req, res) => {
     const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&current=temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m,wind_direction_10m&daily=weather_code,temperature_2m_max,temperature_2m_min,wind_speed_10m_max,precipitation_probability_max&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch&forecast_days=5&timezone=auto`;
     const aqiUrl = `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${lat}&longitude=${lng}&current=pm10,pm2_5,carbon_monoxide,nitrogen_dioxide,sulphur_dioxide,ozone,us_aqi,european_aqi,alder_pollen,birch_pollen,grass_pollen,mugwort_pollen,olive_pollen,ragweed_pollen&hourly=pm10,pm2_5,ozone,us_aqi,alder_pollen,birch_pollen,grass_pollen,mugwort_pollen,olive_pollen,ragweed_pollen&forecast_days=5&timezone=auto`;
 
-    const [weatherResp, aqiResp] = await Promise.all([
-      fetchWithTimeout(weatherUrl, { headers: { "User-Agent": "AllerScan-App/1.0" } }, 2500),
-      fetchWithTimeout(aqiUrl, { headers: { "User-Agent": "AllerScan-App/1.0" } }, 2500),
+    const [weatherData, aqiDataRaw] = await Promise.all([
+      cachedJsonFetch(
+        `weather5:${coordKey(lat, lng)}`,
+        weatherUrl,
+        { headers: { "User-Agent": "AllerScan-App/1.0" } },
+        2500
+      ),
+      cachedJsonFetch(
+        `aqi5:${coordKey(lat, lng)}`,
+        aqiUrl,
+        { headers: { "User-Agent": "AllerScan-App/1.0" } },
+        2500
+      ),
     ]);
-
-    let weatherData: any = null;
-    let aqiDataRaw: any = null;
-
-    if (weatherResp && weatherResp.ok) {
-      try {
-        weatherData = await weatherResp.json();
-      } catch {
-        // ignore
-      }
-    }
-
-    if (aqiResp && aqiResp.ok) {
-      try {
-        aqiDataRaw = await aqiResp.json();
-      } catch {
-        // ignore
-      }
-    }
 
     // Current atmospheric metrics
     const currentTemp = weatherData?.current?.temperature_2m ?? 74;
@@ -520,81 +651,129 @@ app.get("/api/pollen-aqi", async (req, res) => {
     const currentWindDeg = weatherData?.current?.wind_direction_10m ?? 180;
     const currentWeatherCode = weatherData?.current?.weather_code ?? 0;
 
-    // Current Air Quality readings
-    const usAqi = aqiDataRaw?.current?.us_aqi ?? Math.round(35 + (Math.abs(Math.sin(lat * 10)) * 40));
-    const pm25 = aqiDataRaw?.current?.pm2_5 ?? Math.round(usAqi * 0.28);
-    const pm10 = aqiDataRaw?.current?.pm10 ?? Math.round(usAqi * 0.45);
-    const ozone = aqiDataRaw?.current?.ozone ?? Math.round(usAqi * 0.32);
+    // Current air quality. Emitted only when the live feed actually reported one — deriving a
+    // plausible AQI from `Math.sin(lat)` produced a number indistinguishable from a measurement.
+    const liveAqi = aqiDataRaw?.current;
+    const usAqi = typeof liveAqi?.us_aqi === 'number' ? liveAqi.us_aqi : null;
+    const aqiPayload =
+      usAqi === null
+        ? undefined
+        : {
+            aqi: Math.round(usAqi),
+            category: getAqiCategory(usAqi),
+            pm25: Number((typeof liveAqi.pm2_5 === 'number' ? liveAqi.pm2_5 : 0).toFixed(1)),
+            pm10: Number((typeof liveAqi.pm10 === 'number' ? liveAqi.pm10 : 0).toFixed(1)),
+            ozone: Number((typeof liveAqi.ozone === 'number' ? liveAqi.ozone : 0).toFixed(1)),
+          };
 
-    const aqiPayload = {
-      aqi: Math.round(usAqi),
-      category: getAqiCategory(usAqi),
-      pm25: Number(pm25.toFixed(1)),
-      pm10: Number(pm10.toFixed(1)),
-      ozone: Number(ozone.toFixed(1)),
-    };
-
-    // Calculate real pollen index numbers
+    // Calculate the pollen index numbers, tracking where they came from.
+    //
+    // The weather call succeeding tells you nothing about whether pollen data exists for this
+    // point: Open-Meteo's forecast grid is global, its pollen sensor grid is not. Labelling both
+    // with one "Live" badge meant modelled numbers shipped as readings, so the provenance is
+    // tracked separately here and returned as `pollenDataSource` / `pollenIsModeled`.
     let treeVal = 20;
     let grassVal = 25;
     let weedVal = 20;
     let moldVal = 15;
+    let pollenSource = "Atmospheric & Seasonal Pollen Model";
+    let pollenIsModeled = true;
 
     let treeTopSpecies = ['Oak Tree', 'Birch Tree', 'Cedar Tree'];
     let grassTopSpecies = ['Bermuda Grass', 'Kentucky Bluegrass'];
     let weedTopSpecies = ['Ragweed', 'Sagebrush'];
-    let moldTopSpecies = ['Alternaria', 'Cladosporium'];
+    const moldTopSpecies = ['Alternaria', 'Cladosporium'];
 
-    if (googlePollenData && googlePollenData.dailyInfo && googlePollenData.dailyInfo.length > 0) {
-      const todayInfo = googlePollenData.dailyInfo[0];
-      if (todayInfo.pollenTypeInfo) {
-        for (const p of todayInfo.pollenTypeInfo) {
-          const code = p.code?.toLowerCase();
-          const val = (p.indexInfo?.value ?? 2) * 20; // 0-5 UPI converted to 0-100
-          if (code === 'tree') {
-            treeVal = Math.min(100, Math.round(val));
-          } else if (code === 'grass') {
-            grassVal = Math.min(100, Math.round(val));
-          } else if (code === 'weed') {
-            weedVal = Math.min(100, Math.round(val));
-          }
-        }
+    // Mold is always derived from humidity and temperature — no source reports it directly.
+    const humidityFactor = currentHumidity > 60 ? (currentHumidity - 50) * 0.8 : 10;
+    const derivedMold = Math.min(90, Math.max(5, Math.round(15 + humidityFactor + (currentTemp > 70 ? 12 : 0))));
+
+    const googleTodayInfo = googlePollenData?.dailyInfo?.[0];
+    const googleTypeInfo: any[] = googleTodayInfo?.pollenTypeInfo || [];
+    // A type with no index value means "Google has no reading", which is not the same as a
+    // reading of zero. Substituting a mid-scale 2 (40/100) invented a Moderate day out of nothing.
+    const googleHasReading = googleTypeInfo.some((p: any) => typeof p?.indexInfo?.value === 'number');
+
+    if (googleHasReading) {
+      for (const p of googleTypeInfo) {
+        const code = p.code?.toLowerCase();
+        const raw = p?.indexInfo?.value;
+        if (typeof raw !== 'number') continue;
+        const val = Math.min(100, Math.round(raw * 20)); // 0-5 UPI to 0-100
+        if (code === 'tree') treeVal = val;
+        else if (code === 'grass') grassVal = val;
+        else if (code === 'weed') weedVal = val;
       }
-      if (todayInfo.plantInfo && todayInfo.plantInfo.length > 0) {
-        const topPlants = todayInfo.plantInfo.map((pi: any) => pi.displayName || pi.code);
-        treeTopSpecies = topPlants.slice(0, 3);
-      }
+      moldVal = derivedMold;
+      pollenSource = "Live Google Maps Pollen API";
+      pollenIsModeled = false;
+
+      // Google's plantInfo mixes trees, grasses and weeds in one array. Filing all of it under
+      // "tree" put ragweed in the Tree Pollen card and left the others on their defaults.
+      const plants: any[] = googleTodayInfo?.plantInfo || [];
+      const named = plants.filter((pi: any) => pi?.displayName || pi?.code);
+      const byType = (type: string) =>
+        named
+          .filter((pi: any) => (pi?.plantDescription?.type || '').toUpperCase() === type)
+          .map((pi: any) => pi.displayName || pi.code)
+          .slice(0, 3);
+
+      const googleTrees = byType('TREE');
+      const googleGrasses = byType('GRASS');
+      const googleWeeds = byType('WEED');
+      if (googleTrees.length > 0) treeTopSpecies = googleTrees;
+      if (googleGrasses.length > 0) grassTopSpecies = googleGrasses;
+      if (googleWeeds.length > 0) weedTopSpecies = googleWeeds;
     } else if (aqiDataRaw?.current) {
-      // Calculate from live Open-Meteo Pollen sensors (grains/m³)
+      // Live Open-Meteo pollen sensors, in grains/m3. `null` means the grid doesn't cover this
+      // point; `0` is a real reading and is passed through as a real zero rather than being
+      // overwritten with a seasonal guess — winter really does have no grass pollen.
       const c = aqiDataRaw.current;
-      const birchGrains = c.birch_pollen || 0;
-      const alderGrains = c.alder_pollen || 0;
-      const oliveGrains = c.olive_pollen || 0;
-      const rawTree = birchGrains + alderGrains + oliveGrains;
+      const readField = (value: unknown): number | null =>
+        typeof value === 'number' && Number.isFinite(value) ? value : null;
 
-      const grassGrains = c.grass_pollen || 0;
-      const ragweedGrains = c.ragweed_pollen || 0;
-      const mugwortGrains = c.mugwort_pollen || 0;
-      const rawWeed = ragweedGrains + mugwortGrains;
+      const birch = readField(c.birch_pollen);
+      const alder = readField(c.alder_pollen);
+      const olive = readField(c.olive_pollen);
+      const grass = readField(c.grass_pollen);
+      const ragweed = readField(c.ragweed_pollen);
+      const mugwort = readField(c.mugwort_pollen);
 
-      // Map atmospheric grains & seasonal meteorological factors to 0-100 index
-      const windMultiplier = Math.min(1.4, Math.max(0.8, 1 + (currentWindSpeed - 8) * 0.03));
-      const tempFactor = currentTemp > 65 && currentTemp < 92 ? 1.2 : 0.9;
+      const hasTree = birch !== null || alder !== null || olive !== null;
+      const hasGrass = grass !== null;
+      const hasWeed = ragweed !== null || mugwort !== null;
 
-      treeVal = Math.min(95, Math.max(15, Math.round((rawTree > 0 ? rawTree * 2.5 : 35 + ((Math.abs(Math.sin(lat * 5)) * 40))) * windMultiplier * tempFactor)));
-      grassVal = Math.min(95, Math.max(15, Math.round((grassGrains > 0 ? grassGrains * 3.2 : 30 + ((Math.abs(Math.cos(lng * 4)) * 35))) * windMultiplier)));
-      weedVal = Math.min(95, Math.max(15, Math.round((rawWeed > 0 ? rawWeed * 2.8 : 28 + ((Math.abs(Math.sin(lng * 7)) * 42))) * windMultiplier)));
+      if (hasTree || hasGrass || hasWeed) {
+        const windMultiplier = Math.min(1.4, Math.max(0.8, 1 + (currentWindSpeed - 8) * 0.03));
+        const tempFactor = currentTemp > 65 && currentTemp < 92 ? 1.2 : 0.9;
+        const rawTree = (birch ?? 0) + (alder ?? 0) + (olive ?? 0);
+        const rawWeed = (ragweed ?? 0) + (mugwort ?? 0);
 
-      // Mold spores correlate with humidity and temperature
-      const humidityFactor = currentHumidity > 60 ? (currentHumidity - 50) * 0.8 : 10;
-      moldVal = Math.min(90, Math.max(12, Math.round(15 + humidityFactor + (currentTemp > 70 ? 12 : 0))));
-    } else {
-      // Deterministic atmospheric fallback
-      treeVal = Math.min(90, Math.max(20, Math.round(35 + Math.abs(Math.sin(lat * 3)) * 45)));
-      grassVal = Math.min(90, Math.max(18, Math.round(30 + Math.abs(Math.cos(lng * 2)) * 40)));
-      weedVal = Math.min(90, Math.max(22, Math.round(38 + Math.abs(Math.sin(lng * 5)) * 42)));
-      moldVal = Math.min(85, Math.max(15, Math.round(25 + (currentHumidity > 60 ? 25 : 10))));
+        treeVal = hasTree ? Math.min(100, Math.round(rawTree * 2.5 * windMultiplier * tempFactor)) : 0;
+        grassVal = hasGrass ? Math.min(100, Math.round((grass ?? 0) * 3.2 * windMultiplier)) : 0;
+        weedVal = hasWeed ? Math.min(100, Math.round(rawWeed * 2.8 * windMultiplier)) : 0;
+        moldVal = derivedMold;
+        pollenSource = "Live Open-Meteo Pollen Sensors";
+        pollenIsModeled = false;
+      }
     }
+
+    if (pollenIsModeled) {
+      // No live pollen coverage for this point. These are seasonal/geographic estimates and are
+      // labelled as such by `pollenIsModeled`, so the dashboard can say so instead of implying a
+      // sensor reading.
+      const month = new Date().getMonth();
+      const hemisphereMonth = lat < 0 ? (month + 6) % 12 : month;
+      const springMultiplier = hemisphereMonth >= 2 && hemisphereMonth <= 5 ? 1.5 : 0.8;
+      const summerMultiplier = hemisphereMonth >= 4 && hemisphereMonth <= 8 ? 1.4 : 0.8;
+      const fallMultiplier = hemisphereMonth >= 7 && hemisphereMonth <= 10 ? 1.6 : 0.7;
+
+      treeVal = Math.min(95, Math.max(5, Math.round((35 + Math.abs(Math.sin(lat * 5)) * 40) * springMultiplier)));
+      grassVal = Math.min(95, Math.max(5, Math.round((30 + Math.abs(Math.cos(lng * 4)) * 35) * summerMultiplier)));
+      weedVal = Math.min(95, Math.max(5, Math.round((28 + Math.abs(Math.sin(lng * 7)) * 42) * fallMultiplier)));
+      moldVal = derivedMold;
+    }
+
 
     const pollenData = {
       tree: {
@@ -636,7 +815,7 @@ app.get("/api/pollen-aqi", async (req, res) => {
     let totalWeightedScore = 0;
     let totalWeight = 0;
 
-    const allergenCategoryMap: Record<string, { val: number; level: 'Low' | 'Moderate' | 'High' | 'Very High' }> = {
+    const allergenCategoryMap: Record<string, { val: number; level: 'Low' | 'Moderate' | 'High' | 'Very High' }> = Object.assign(emptySafeTable<{ val: number; level: 'Low' | 'Moderate' | 'High' | 'Very High' }>(), {
       oak: { val: treeVal, level: pollenData.tree.level },
       birch: { val: treeVal, level: pollenData.tree.level },
       cedar: { val: treeVal, level: pollenData.tree.level },
@@ -658,9 +837,9 @@ app.get("/api/pollen-aqi", async (req, res) => {
       dust_mites: { val: 35, level: 'Moderate' },
       pet_dander_cat: { val: 40, level: 'Moderate' },
       pet_dander_dog: { val: 40, level: 'Moderate' },
-    };
+    });
 
-    const allergenNames: Record<string, { name: string; cat: 'tree' | 'grass' | 'weed' | 'mold' | 'indoor' }> = {
+    const allergenNames: Record<string, { name: string; cat: 'tree' | 'grass' | 'weed' | 'mold' | 'indoor' }> = Object.assign(emptySafeTable<{ name: string; cat: 'tree' | 'grass' | 'weed' | 'mold' | 'indoor' }>(), {
       oak: { name: 'Oak Tree', cat: 'tree' },
       birch: { name: 'Birch Tree', cat: 'tree' },
       cedar: { name: 'Mountain Cedar', cat: 'tree' },
@@ -682,7 +861,7 @@ app.get("/api/pollen-aqi", async (req, res) => {
       dust_mites: { name: 'Dust Mites', cat: 'indoor' },
       pet_dander_cat: { name: 'Cat Dander', cat: 'indoor' },
       pet_dander_dog: { name: 'Dog Dander', cat: 'indoor' },
-    };
+    });
 
     // Custom user-added allergens aren't in the built-in database above, so they have no
     // known species-level pollen reading. Approximate them using their chosen category's
@@ -721,12 +900,11 @@ app.get("/api/pollen-aqi", async (req, res) => {
       }
     });
 
-    let overallScore = 30;
-    if (totalWeight > 0) {
-      overallScore = Math.round(totalWeightedScore / totalWeight);
-    } else {
-      overallScore = Math.round((treeVal + grassVal + weedVal + moldVal) / 4);
-    }
+    const baseScore =
+      totalWeight > 0
+        ? Math.round(totalWeightedScore / totalWeight)
+        : Math.round((treeVal + grassVal + weedVal + moldVal) / 4);
+    const overallScore = applySensitivity(baseScore, sensitivityFactor);
 
     let riskCategory: 'Low' | 'Moderate' | 'High' | 'Very High' = 'Low';
     if (overallScore >= 70) riskCategory = 'Very High';
@@ -794,11 +972,11 @@ app.get("/api/pollen-aqi", async (req, res) => {
       });
     }
 
-    const dataSourceName = googlePollenData
-      ? "Live Google Maps Pollen API + Open-Meteo AQI"
-      : weatherData || aqiDataRaw
+    // Describes the weather/AQI feed only. The pollen figures carry their own provenance in
+    // `pollenDataSource`, because the two can disagree.
+    const dataSourceName = weatherData || aqiDataRaw
       ? "Live Open-Meteo Air Quality & Weather API"
-      : "Atmospheric & Seasonal Pollen Model";
+      : "No live weather feed";
 
     // The weather request above used timezone=auto, so Open-Meteo already resolved the IANA
     // time zone for these exact coordinates — use it so "last updated" reflects the selected
@@ -825,14 +1003,20 @@ app.get("/api/pollen-aqi", async (req, res) => {
       timeZoneAbbr,
       timeZoneNote,
       dataSource: dataSourceName,
-      weather: {
-        temperatureF: Math.round(currentTemp),
-        humidityPct: Math.round(currentHumidity),
-        apparentTempF: Math.round(currentApparentTemp),
-        windSpeedMph: Math.round(currentWindSpeed),
-        windDirection: getCompassDirection(currentWindDeg),
-        weatherDescription: getWeatherDescription(currentWeatherCode),
-      },
+      pollenDataSource: pollenSource,
+      pollenIsModeled,
+      // Omitted when the weather call didn't come back. The defaults behind these variables keep
+      // the pollen maths working; they are not observations and aren't presented as any.
+      weather: weatherData?.current
+        ? {
+            temperatureF: Math.round(currentTemp),
+            humidityPct: Math.round(currentHumidity),
+            apparentTempF: Math.round(currentApparentTemp),
+            windSpeedMph: Math.round(currentWindSpeed),
+            windDirection: getCompassDirection(currentWindDeg),
+            weatherDescription: getWeatherDescription(currentWeatherCode),
+          }
+        : undefined,
       overallPersonalRiskScore: overallScore,
       riskCategory,
       aqi: aqiPayload,
@@ -842,53 +1026,129 @@ app.get("/api/pollen-aqi", async (req, res) => {
       forecast,
     });
   } catch (err: any) {
-    console.error("Live Pollen & AQI route error, serving reliable fallback:", err);
-    // Reliable fallback so the app NEVER returns 500
+    console.error("Live Pollen & AQI route error, serving the seasonal estimate:", err);
+
+    // The app never gets a 500 from this route, but the fallback must not invent the user's
+    // medical profile either. This block used to return a hard-coded `matchedActiveAllergens`
+    // naming ragweed as "severe" and oak as "moderate", which the dashboard then rendered as
+    // "2 of your allergens active" — for people who had selected neither. Everything below is
+    // derived from what the request actually carried, labelled as an estimate, and omits the
+    // weather and air-quality figures entirely rather than making them up.
+    const month = new Date().getMonth();
+    const safeLat = Number.isFinite(lat) ? lat : 30.2672;
+    const safeLng = Number.isFinite(lng) ? lng : -97.7431;
+    const hemisphereMonth = safeLat < 0 ? (month + 6) % 12 : month;
+    const springMultiplier = hemisphereMonth >= 2 && hemisphereMonth <= 5 ? 1.5 : 0.8;
+    const summerMultiplier = hemisphereMonth >= 4 && hemisphereMonth <= 8 ? 1.4 : 0.8;
+    const fallMultiplier = hemisphereMonth >= 7 && hemisphereMonth <= 10 ? 1.6 : 0.7;
+
+    const estTree = Math.min(95, Math.max(5, Math.round((35 + Math.abs(Math.sin(safeLat * 5)) * 40) * springMultiplier)));
+    const estGrass = Math.min(95, Math.max(5, Math.round((30 + Math.abs(Math.cos(safeLng * 4)) * 35) * summerMultiplier)));
+    const estWeed = Math.min(95, Math.max(5, Math.round((28 + Math.abs(Math.sin(safeLng * 7)) * 42) * fallMultiplier)));
+    const estMold = Math.min(90, Math.max(5, Math.round(22 + Math.abs(Math.cos(safeLat * 3)) * 30)));
+
+    const estByCategory: Record<string, number> = Object.assign(emptySafeTable<number>(), {
+      tree: estTree,
+      grass: estGrass,
+      weed: estWeed,
+      mold: estMold,
+      indoor: 35,
+    });
+
+    const estMatched: Array<{
+      id: string;
+      name: string;
+      category: 'tree' | 'grass' | 'weed' | 'mold' | 'indoor';
+      userSeverity: 'mild' | 'moderate' | 'severe';
+      currentLevel: 'Low' | 'Moderate' | 'High' | 'Very High';
+      currentValue: number;
+    }> = [];
+
+    let estWeighted = 0;
+    let estWeight = 0;
+
+    for (const [algId, severity] of Object.entries(userAllergens)) {
+      const category =
+        ALLERGEN_CATEGORY_BY_ID[algId] || customAllergens[algId]?.category || null;
+      if (!category) continue;
+      const name = ALLERGEN_NAME_BY_ID[algId] || customAllergens[algId]?.name || algId;
+      const value = estByCategory[category] ?? 35;
+      const weight = severity === 'severe' ? 3 : severity === 'moderate' ? 2 : 1;
+
+      estWeighted += value * weight;
+      estWeight += weight;
+
+      if (value >= 30) {
+        estMatched.push({
+          id: algId,
+          name,
+          category: category as 'tree' | 'grass' | 'weed' | 'mold' | 'indoor',
+          userSeverity: severity,
+          currentLevel: getPollenLevel(value),
+          currentValue: value,
+        });
+      }
+    }
+
+    const estBase =
+      estWeight > 0
+        ? Math.round(estWeighted / estWeight)
+        : Math.round((estTree + estGrass + estWeed + estMold) / 4);
+    const estScore = applySensitivity(estBase, sensitivityFactor);
+    const estCategory: 'Low' | 'Moderate' | 'High' | 'Very High' =
+      estScore >= 70 ? 'Very High' : estScore >= 50 ? 'High' : estScore >= 30 ? 'Moderate' : 'Low';
+
+    const estForecast = [];
+    for (let i = 0; i < 5; i++) {
+      const dateObj = new Date(Date.now() + i * 86400000);
+      const dayTree = Math.min(95, Math.max(5, estTree + (i * 2 - 3)));
+      const dayGrass = Math.min(95, Math.max(5, estGrass + (i * 3 - 4)));
+      const dayWeed = Math.min(95, Math.max(5, estWeed - i * 2));
+      const dayMold = Math.min(90, Math.max(5, estMold + (i * 2 - 2)));
+      const dayOverall = Math.round((dayTree + dayGrass + dayWeed + dayMold) / 4);
+      estForecast.push({
+        dayName: i === 0 ? 'Today' : i === 1 ? 'Tomorrow' : dateObj.toLocaleDateString('en-US', { weekday: 'long' }),
+        date: dateObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+        riskLevel: getPollenLevel(dayOverall),
+        overallScore: dayOverall,
+        tree: dayTree,
+        grass: dayGrass,
+        weed: dayWeed,
+        mold: dayMold,
+        dominantAllergen:
+          estWeed > estTree && estWeed > estGrass ? 'Ragweed' : estTree > estGrass ? 'Oak Tree' : 'Bermuda Grass',
+      });
+    }
+
     return res.json({
       locationName,
       updatedAt: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }),
       timeZoneAbbr: 'UTC',
       timeZoneNote: `Could not confirm the time zone for ${locationName}; showing UTC time instead.`,
-      dataSource: "Atmospheric & Seasonal Pollen Model",
-      weather: {
-        temperatureF: 75,
-        humidityPct: 48,
-        apparentTempF: 76,
-        windSpeedMph: 7,
-        windDirection: "SSE",
-        weatherDescription: "Partly cloudy",
-      },
-      overallPersonalRiskScore: 48,
-      riskCategory: "Moderate",
-      aqi: {
-        aqi: 42,
-        category: "Good",
-        pm25: 9.8,
-        pm10: 16.2,
-        ozone: 32.0,
-      },
+      dataSource: "No live weather feed",
+      pollenDataSource: "Atmospheric & Seasonal Pollen Model",
+      pollenIsModeled: true,
+      // No `weather` and no `aqi`: nothing live came back, and plausible-looking figures would
+      // read as measurements.
+      overallPersonalRiskScore: estScore,
+      riskCategory: estCategory,
       pollen: {
-        tree: { level: 'Moderate', value: 45, trend: 'stable', topSpecies: ['Oak Tree', 'Birch Tree'] },
-        grass: { level: 'Moderate', value: 38, trend: 'falling', topSpecies: ['Bermuda Grass'] },
-        weed: { level: 'High', value: 62, trend: 'rising', topSpecies: ['Ragweed'] },
-        mold: { level: 'Low', value: 24, trend: 'stable', topSpecies: ['Alternaria'] },
+        tree: { level: getPollenLevel(estTree), value: estTree, trend: 'stable', topSpecies: ['Oak Tree', 'Birch Tree', 'Cedar Tree'] },
+        grass: { level: getPollenLevel(estGrass), value: estGrass, trend: 'stable', topSpecies: ['Bermuda Grass', 'Kentucky Bluegrass'] },
+        weed: { level: getPollenLevel(estWeed), value: estWeed, trend: 'stable', topSpecies: ['Ragweed', 'Sagebrush'] },
+        mold: { level: getPollenLevel(estMold), value: estMold, trend: 'stable', topSpecies: ['Alternaria', 'Cladosporium'] },
       },
-      matchedActiveAllergens: [
-        { id: 'ragweed', name: 'Ragweed', category: 'weed', userSeverity: 'severe', currentLevel: 'High', currentValue: 62 },
-        { id: 'oak', name: 'Oak Tree', category: 'tree', userSeverity: 'moderate', currentLevel: 'Moderate', currentValue: 45 },
-      ],
+      matchedActiveAllergens: estMatched,
       recommendations: [
-        "Ragweed pollen is elevated today. Consider wearing a hat and sunglasses outdoors.",
-        "Keep windows closed during peak pollen hours in the afternoon.",
-        "Shower after returning from outdoor exercise to remove pollen.",
+        estCategory === 'High' || estCategory === 'Very High'
+          ? 'Estimated risk is high for your profile. Keep windows closed and use air conditioning on recirculate.'
+          : estCategory === 'Moderate'
+          ? 'Estimated risk is moderate. Check again before planning long outdoor activity.'
+          : 'Estimated risk is low for your profile today.',
+        'Shower and change clothes after returning from prolonged outdoor exposure.',
+        'These figures are a seasonal estimate — live pollen and air quality data could not be reached.',
       ],
-      forecast: [
-        { dayName: "Today", date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' }), riskLevel: 'Moderate', overallScore: 48, tree: 45, grass: 38, weed: 62, mold: 24, dominantAllergen: 'Ragweed' },
-        { dayName: "Tomorrow", date: new Date(Date.now() + 86400000).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }), riskLevel: 'Moderate', overallScore: 45, tree: 42, grass: 35, weed: 58, mold: 22, dominantAllergen: 'Ragweed' },
-        { dayName: new Date(Date.now() + 2 * 86400000).toLocaleDateString('en-US', { weekday: 'long' }), date: new Date(Date.now() + 2 * 86400000).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }), riskLevel: 'Low', overallScore: 28, tree: 25, grass: 20, weed: 35, mold: 18, dominantAllergen: 'Oak Tree' },
-        { dayName: new Date(Date.now() + 3 * 86400000).toLocaleDateString('en-US', { weekday: 'long' }), date: new Date(Date.now() + 3 * 86400000).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }), riskLevel: 'Moderate', overallScore: 42, tree: 40, grass: 30, weed: 50, mold: 20, dominantAllergen: 'Ragweed' },
-        { dayName: new Date(Date.now() + 4 * 86400000).toLocaleDateString('en-US', { weekday: 'long' }), date: new Date(Date.now() + 4 * 86400000).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }), riskLevel: 'Moderate', overallScore: 50, tree: 48, grass: 40, weed: 60, mold: 25, dominantAllergen: 'Ragweed' },
-      ],
+      forecast: estForecast,
     });
   }
 });
@@ -978,6 +1238,84 @@ app.get("/api/location-search", async (req, res) => {
   res.json(filtered.length > 0 ? filtered : DEFAULT_CITY_OPTIONS.slice(0, 4));
 });
 
+// 3b. Reverse geocoding — turns GPS coordinates into a place name, so "use my location" can
+// store a real city instead of writing the literal string "My GPS Location" in as the city name
+// (which then went out as `?locationName=My GPS Location` on every subsequent request).
+app.get("/api/reverse-geocode", async (req, res) => {
+  const lat = parseFloat(req.query.lat as string);
+  const lng = parseFloat(req.query.lng as string);
+
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return res.status(400).json({ error: "lat and lng are required." });
+  }
+
+  const cacheKey = `reverse:${coordKey(lat, lng)}`;
+  const cached = cacheGet<{ cityName: string; region: string }>(cacheKey);
+  if (cached) return res.json({ ...cached, lat, lng });
+
+  // 1. Photon. Built from a constant base so the request target is assembled here, not
+  // interpolated from request data, even though both values are already validated numbers.
+  const photonUrl = new URL("https://photon.komoot.io/reverse");
+  photonUrl.searchParams.set("lat", String(lat));
+  photonUrl.searchParams.set("lon", String(lng));
+
+  try {
+    const photonData = await cachedJsonFetch(
+      `reverse-photon:${coordKey(lat, lng)}`,
+      photonUrl.toString(),
+      { headers: { "User-Agent": "AllerScan-PollenApp/1.0" } },
+      2000,
+      60 * 60 * 1000
+    );
+    const props = photonData?.features?.[0]?.properties;
+    if (props) {
+      const cityName = props.city || props.town || props.village || props.name || props.county;
+      if (cityName) {
+        const region = [props.state || props.county, props.country].filter(Boolean).join(", ");
+        const result = { cityName, region };
+        cacheSet(cacheKey, result, 60 * 60 * 1000);
+        return res.json({ ...result, lat, lng });
+      }
+    }
+  } catch (err) {
+    console.warn("Photon reverse geocode failed, trying Nominatim:", err);
+  }
+
+  // 2. Nominatim
+  const nominatimUrl = new URL("https://nominatim.openstreetmap.org/reverse");
+  nominatimUrl.searchParams.set("lat", String(lat));
+  nominatimUrl.searchParams.set("lon", String(lng));
+  nominatimUrl.searchParams.set("format", "json");
+  nominatimUrl.searchParams.set("zoom", "10");
+  nominatimUrl.searchParams.set("addressdetails", "1");
+
+  try {
+    const nomData = await cachedJsonFetch(
+      `reverse-nominatim:${coordKey(lat, lng)}`,
+      nominatimUrl.toString(),
+      { headers: { "User-Agent": "AllerScan-PollenApp/1.0" } },
+      2000,
+      60 * 60 * 1000
+    );
+    const addr = nomData?.address;
+    if (addr) {
+      const cityName = addr.city || addr.town || addr.village || addr.municipality || addr.county;
+      if (cityName) {
+        const region = [addr.state || addr.county, addr.country].filter(Boolean).join(", ");
+        const result = { cityName, region };
+        cacheSet(cacheKey, result, 60 * 60 * 1000);
+        return res.json({ ...result, lat, lng });
+      }
+    }
+  } catch (err) {
+    console.warn("Nominatim reverse geocode failed:", err);
+  }
+
+  // Neither geocoder could name the point. The coordinates are what the data layer actually
+  // needs, so this isn't an error — the caller falls back to a generic label.
+  return res.status(404).json({ error: "Could not resolve a place name for those coordinates." });
+});
+
 // 4. Pollen Hotspots endpoint — real named locations (Google Places API) each carrying their
 // own live per-point pollen reading (Google Pollen API / Open-Meteo pollen sensors). No fixed
 // illustrative station names/coordinates/scores are used: if real places or real readings
@@ -985,60 +1323,60 @@ app.get("/api/location-search", async (req, res) => {
 // as if it were live.
 app.get("/api/pollen-hotspots", async (req, res) => {
   try {
-    const centerLat = parseFloat(req.query.lat as string) || 30.2672;
-    const centerLng = parseFloat(req.query.lng as string) || -97.7431;
+    // `||` treated a valid 0 as missing, relocating anyone on the equator or the prime meridian
+    // to Austin. Test for a finite number instead.
+    const parsedLat = parseFloat(req.query.lat as string);
+    const parsedLng = parseFloat(req.query.lng as string);
+    const centerLat = Number.isFinite(parsedLat) ? parsedLat : 30.2672;
+    const centerLng = Number.isFinite(parsedLng) ? parsedLng : -97.7431;
     const locationName = (req.query.locationName as string) || "Austin, TX";
     const userAllergensJson = req.query.userAllergens as string;
     let userAllergens: Record<string, 'mild' | 'moderate' | 'severe'> = {};
 
     if (userAllergensJson) {
       try {
-        userAllergens = JSON.parse(userAllergensJson);
+        userAllergens = withSafeKeys(JSON.parse(userAllergensJson));
       } catch (e) {
         // ignore parse
       }
     }
 
-    // Fetch live weather & AQI for the center point from Open-Meteo with timeout
+    // Live weather & AQI for the centre point. The numeric defaults keep the pollen maths
+    // working; `weatherIsLive` records whether any of it was actually measured, so the response
+    // can omit the figures instead of reporting 75 °F for a feed that never answered.
     let liveWeather = { tempF: 75, humidity: 50, windMph: 8, windDirDeg: 180, windDirStr: "S", aqi: 45 };
-    const [weatherResp, aqiCenterResp] = await Promise.all([
-      fetchWithTimeout(
+    let weatherIsLive = false;
+    let aqiIsLive = false;
+    const [centerWeather, centerAqi] = await Promise.all([
+      cachedJsonFetch(
+        `hotspotweather:${coordKey(centerLat, centerLng)}`,
         `https://api.open-meteo.com/v1/forecast?latitude=${centerLat}&longitude=${centerLng}&current=temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m&temperature_unit=fahrenheit&wind_speed_unit=mph`,
         { headers: { "User-Agent": "AllerScan-App/1.0" } },
         2200
       ),
-      fetchWithTimeout(
+      cachedJsonFetch(
+        `hotspotaqi:${coordKey(centerLat, centerLng)}`,
         `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${centerLat}&longitude=${centerLng}&current=us_aqi,pm2_5,pm10`,
         { headers: { "User-Agent": "AllerScan-App/1.0" } },
         2200
       ),
     ]);
 
-    if (weatherResp && weatherResp.ok) {
-      try {
-        const d = await weatherResp.json();
-        const c = d.current;
-        if (c) {
-          liveWeather.tempF = Math.round(c.temperature_2m || 75);
-          liveWeather.humidity = Math.round(c.relative_humidity_2m || 50);
-          liveWeather.windMph = Math.round(c.wind_speed_10m || 8);
-          liveWeather.windDirDeg = Math.round(c.wind_direction_10m || 180);
-          liveWeather.windDirStr = getCompassDirection(liveWeather.windDirDeg);
-        }
-      } catch (parseErr) {
-        console.warn("Live weather parse error for hotspots:", parseErr);
+    const cw = centerWeather?.current;
+    if (cw) {
+      weatherIsLive = true;
+      if (typeof cw.temperature_2m === "number") liveWeather.tempF = Math.round(cw.temperature_2m);
+      if (typeof cw.relative_humidity_2m === "number") liveWeather.humidity = Math.round(cw.relative_humidity_2m);
+      if (typeof cw.wind_speed_10m === "number") liveWeather.windMph = Math.round(cw.wind_speed_10m);
+      if (typeof cw.wind_direction_10m === "number") {
+        liveWeather.windDirDeg = Math.round(cw.wind_direction_10m);
+        liveWeather.windDirStr = getCompassDirection(liveWeather.windDirDeg);
       }
     }
 
-    if (aqiCenterResp && aqiCenterResp.ok) {
-      try {
-        const aqData = await aqiCenterResp.json();
-        if (aqData.current?.us_aqi) {
-          liveWeather.aqi = Math.round(aqData.current.us_aqi);
-        }
-      } catch (parseErr) {
-        console.warn("Live AQI parse error for hotspots:", parseErr);
-      }
+    if (typeof centerAqi?.current?.us_aqi === "number") {
+      liveWeather.aqi = Math.round(centerAqi.current.us_aqi);
+      aqiIsLive = true;
     }
 
     // Real nearby locations via the Places API (New) Text Search. This is a server-to-server
@@ -1054,7 +1392,12 @@ app.get("/api/pollen-hotspots", async (req, res) => {
     if (!placesKey) {
       unavailableReason = "No Places API key is configured on the server (GOOGLE_PLACES_SERVER_KEY or GOOGLE_MAPS_PLATFORM_KEY).";
     } else {
-      try {
+      const placesCacheKey = `places:${coordKey(centerLat, centerLng)}`;
+      const cachedPlaces = cacheGet<typeof realPlaces>(placesCacheKey);
+
+      if (cachedPlaces && cachedPlaces.length > 0) {
+        realPlaces = cachedPlaces;
+      } else try {
         const placesResp = await fetchWithTimeout(
           "https://places.googleapis.com/v1/places:searchText",
           {
@@ -1089,6 +1432,9 @@ app.get("/api/pollen-hotspots", async (req, res) => {
             .slice(0, 6);
           if (realPlaces.length === 0) {
             unavailableReason = "No real nearby locations were returned for this area.";
+          } else {
+            // Places results change far more slowly than pollen readings.
+            cacheSet(placesCacheKey, realPlaces, 60 * 60 * 1000);
           }
         } else if (placesResp) {
           // Surface Google's actual error message (e.g. "API_KEY_HTTP_REFERRER_BLOCKED",
@@ -1116,13 +1462,15 @@ app.get("/api/pollen-hotspots", async (req, res) => {
       return res.json({
         center: { lat: centerLat, lng: centerLng, cityName: locationName },
         updatedAt: new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", timeZone: "UTC" }),
-        liveWeather: {
-          tempF: liveWeather.tempF,
-          humidityPct: liveWeather.humidity,
-          windSpeedMph: liveWeather.windMph,
-          windDirection: liveWeather.windDirStr,
-          aqi: liveWeather.aqi,
-        },
+        liveWeather: weatherIsLive
+          ? {
+              tempF: liveWeather.tempF,
+              humidityPct: liveWeather.humidity,
+              windSpeedMph: liveWeather.windMph,
+              windDirection: liveWeather.windDirStr,
+              aqi: aqiIsLive ? liveWeather.aqi : undefined,
+            }
+          : undefined,
         hotspots: [],
         count: 0,
         dataUnavailable: true,
@@ -1149,26 +1497,49 @@ app.get("/api/pollen-hotspots", async (req, res) => {
       ];
       categories.sort((a, b) => b.val - a.val);
       const dominant = categories[0];
-      const score = Math.min(98, Math.max(10, dominant.val));
+      const score = Math.min(100, Math.max(0, dominant.val));
 
+      // Same thresholds the dashboard gauge, the pollen tiles and the map legend use
+      // (src/utils/severity.ts), so one reading can't carry two different severities.
       let overallRisk: "Low" | "Moderate" | "High" | "Very High" = "Low";
-      if (score >= 75) overallRisk = "Very High";
-      else if (score >= 55) overallRisk = "High";
-      else if (score >= 35) overallRisk = "Moderate";
+      if (score >= 70) overallRisk = "Very High";
+      else if (score >= 50) overallRisk = "High";
+      else if (score >= 30) overallRisk = "Moderate";
 
       const dominantSpecies = CATEGORY_TOP_SPECIES[dominant.cat][0];
 
+      // Only count a match when the saved allergen can actually be named — the UI reports the
+      // user's own trigger, not the category's default species, so an unnameable match would
+      // leave it with nothing truthful to show.
       const matchedIds = Object.keys(userAllergens).filter(
-        (id) => ALLERGEN_CATEGORY_BY_ID[id] === dominant.cat
+        (id) => ALLERGEN_CATEGORY_BY_ID[id] === dominant.cat && Boolean(ALLERGEN_NAME_BY_ID[id])
       );
       const isProfileMatch = matchedIds.length > 0;
       const matchedUserAllergen = isProfileMatch ? ALLERGEN_NAME_BY_ID[matchedIds[0]] : undefined;
       const userSeverity = isProfileMatch ? userAllergens[matchedIds[0]] : undefined;
 
+      // "Elevated" was unconditional, so an index of 10 — the bottom of the Low band — still
+      // read as elevated in the same sentence that printed the number.
+      const levelPhrase =
+        overallRisk === "Very High"
+          ? "very high"
+          : overallRisk === "High"
+          ? "elevated"
+          : overallRisk === "Moderate"
+          ? "moderate"
+          : "low";
+
+      const windClause = weatherIsLive
+        ? `, carried by ${liveWeather.windMph} mph ${liveWeather.windDirStr} winds`
+        : "";
+      const humidityClause = weatherIsLive
+        ? ` Humidity is ${liveWeather.humidity}%, which favors spore release.`
+        : "";
+
       const advisory =
         dominant.cat === "mold"
-          ? `Humidity here is ${liveWeather.humidity}% — favorable conditions for mold spore release.`
-          : `${dominantSpecies} pollen is elevated at this real location (index ${score}/100), carried by ${liveWeather.windMph} mph ${liveWeather.windDirStr} winds.`;
+          ? `Mold is the highest reading here (${levelPhrase}, index ${score}/100).${humidityClause}`
+          : `${dominant.cat.charAt(0).toUpperCase()}${dominant.cat.slice(1)} pollen is the highest reading here (${levelPhrase}, index ${score}/100)${windClause}.`;
 
       const grainsForDominant =
         dominant.cat === "tree" || dominant.cat === "grass" || dominant.cat === "weed"
@@ -1189,17 +1560,17 @@ app.get("/api/pollen-hotspots", async (req, res) => {
         grassPollen: reading.grassVal,
         weedPollen: reading.weedVal,
         moldCount: reading.moldVal,
-        aqi: liveWeather.aqi,
+        aqi: aqiIsLive ? liveWeather.aqi : undefined,
         dominantSpecies,
         dominantCategory: dominant.cat,
         dataSource: reading.source,
         isProfileMatch,
         matchedUserAllergen,
         userSeverity,
-        windSpeedMph: liveWeather.windMph,
-        windDirection: liveWeather.windDirStr,
-        temperatureF: liveWeather.tempF,
-        humidityPct: liveWeather.humidity,
+        windSpeedMph: weatherIsLive ? liveWeather.windMph : undefined,
+        windDirection: weatherIsLive ? liveWeather.windDirStr : undefined,
+        temperatureF: weatherIsLive ? liveWeather.tempF : undefined,
+        humidityPct: weatherIsLive ? liveWeather.humidity : undefined,
         advisory,
       };
     });
@@ -1207,24 +1578,34 @@ app.get("/api/pollen-hotspots", async (req, res) => {
     res.json({
       center: { lat: centerLat, lng: centerLng, cityName: locationName },
       updatedAt: new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", timeZone: "UTC" }),
-      liveWeather: {
-        tempF: liveWeather.tempF,
-        humidityPct: liveWeather.humidity,
-        windSpeedMph: liveWeather.windMph,
-        windDirection: liveWeather.windDirStr,
-        aqi: liveWeather.aqi,
-      },
+      liveWeather: weatherIsLive
+        ? {
+            tempF: liveWeather.tempF,
+            humidityPct: liveWeather.humidity,
+            windSpeedMph: liveWeather.windMph,
+            windDirection: liveWeather.windDirStr,
+            aqi: aqiIsLive ? liveWeather.aqi : undefined,
+          }
+        : undefined,
       hotspots,
       count: hotspots.length,
     });
   } catch (err: any) {
     console.error("Live Hotspots endpoint error:", err);
-    res.status(500).json({ error: "Failed to generate live pollen hotspots data." });
+    res.status(500).json({ error: "Failed to load live pollen hotspot data. Try again in a moment." });
   }
 });
 
 
 // ------------------- VITE MIDDLEWARE / PRODUCTION SERVING -------------------
+
+// Anything under /api that no route above matched is a missing endpoint, not a page. Without
+// this, the SPA catch-all answered with index.html and a 200, so every client calling
+// `resp.json()` failed with "Unexpected token <" — which reads like a parse bug rather than a
+// missing route.
+app.use("/api", (_req, res) => {
+  res.status(404).json({ error: "No such API endpoint." });
+});
 
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
@@ -1252,15 +1633,47 @@ async function startServer() {
     });
   } else {
     const distPath = path.join(process.cwd(), "dist");
+    const indexPath = path.join(distPath, "index.html");
+
+    // Read the shell once at startup rather than on every request. Reading it per-request also
+    // meant a missing build threw synchronously inside the handler, with no error middleware to
+    // catch it — every request died with a stack trace instead of a useful message.
+    let indexHtml: string | null = null;
+    try {
+      indexHtml = fs.readFileSync(indexPath, "utf-8");
+    } catch (err) {
+      console.error(
+        `Could not read ${indexPath}. Run "npm run build" before "npm start" — the server has no client to serve.`,
+        err
+      );
+    }
+
     // index: false so "/" and "index.html" fall through to the catch-all below instead of
     // being served directly by static — otherwise the runtime config script never gets injected.
     app.use(express.static(distPath, { index: false }));
-    app.get("*", (req, res) => {
-      let html = fs.readFileSync(path.join(distPath, "index.html"), "utf-8");
-      html = injectRuntimeConfig(html);
-      res.status(200).set({ "Content-Type": "text/html" }).send(html);
+    app.get("*", (_req, res) => {
+      if (!indexHtml) {
+        res
+          .status(503)
+          .set({ "Content-Type": "text/plain" })
+          .send("AllerScan's client bundle is missing. Run `npm run build`, then restart the server.");
+        return;
+      }
+      res.status(200).set({ "Content-Type": "text/html" }).send(injectRuntimeConfig(indexHtml));
     });
   }
+
+  // Anything that throws past a route handler lands here instead of Express's default HTML error
+  // page. The detail goes to the log; the client gets a message it can show.
+  app.use((err: any, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    console.error("Unhandled server error:", err);
+    if (res.headersSent) return;
+    if (req.path.startsWith("/api/")) {
+      res.status(500).json({ error: "Something went wrong handling that request." });
+    } else {
+      res.status(500).set({ "Content-Type": "text/plain" }).send("Something went wrong.");
+    }
+  });
 
   // On Vercel, the platform's own runtime invokes the exported app per-request
   // (see api/index.ts) instead of listening on a port itself.
