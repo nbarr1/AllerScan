@@ -82,18 +82,34 @@ function getGenAI() {
 // Hosts the preset sample images are served from. The imageUrl branch exists only for those;
 // fetching an arbitrary caller-supplied URL would let anyone use this server to reach private
 // addresses (cloud metadata endpoints, localhost services) it can see and they can't.
-const ALLOWED_IMAGE_HOSTS = new Set([
-  "images.unsplash.com",
-  "plus.unsplash.com",
+//
+// The values are the literal origins the request is rebuilt from. Validating the caller's string
+// and then fetching that same string still hands an attacker-controlled value to fetch(): it is
+// only safe for as long as `new URL()` and the fetch implementation agree about how to parse a
+// hostile URL, and that class of parser differential is exactly how allowlists get bypassed. So
+// the host that reaches fetch() is never the caller's — only the path and query survive.
+//
+// A Map rather than an object literal: `ALLOWED_IMAGE_ORIGINS["constructor"]` on a plain object
+// returns a truthy inherited value, which would sail past the lookup check below.
+const ALLOWED_IMAGE_ORIGINS = new Map<string, string>([
+  ["images.unsplash.com", "https://images.unsplash.com"],
+  ["plus.unsplash.com", "https://plus.unsplash.com"],
 ]);
 
-function isAllowedImageUrl(rawUrl: string): boolean {
+/** Returns a server-constructed URL for an allowed preset image, or null to reject. */
+function resolveAllowedImageUrl(rawUrl: string): string | null {
+  let parsed: URL;
   try {
-    const parsed = new URL(rawUrl);
-    return parsed.protocol === "https:" && ALLOWED_IMAGE_HOSTS.has(parsed.hostname);
+    parsed = new URL(rawUrl);
   } catch {
-    return false;
+    return null;
   }
+  if (parsed.protocol !== "https:") return null;
+
+  const origin = ALLOWED_IMAGE_ORIGINS.get(parsed.hostname.toLowerCase());
+  if (!origin) return null;
+
+  return `${origin}${parsed.pathname}${parsed.search}`;
 }
 
 app.post("/api/scan", scanBodyParser, async (req, res) => {
@@ -104,11 +120,16 @@ app.post("/api/scan", scanBodyParser, async (req, res) => {
       return res.status(400).json({ error: "Missing image payload (imageBase64 or imageUrl required)." });
     }
 
-    // Checked up front so the guard doesn't depend on whether a Gemini key happens to be set.
-    if (imageUrl && !isAllowedImageUrl(imageUrl)) {
-      return res.status(400).json({
-        error: "That image URL isn't allowed. Send the image as base64 instead.",
-      });
+    // Resolved up front so the guard doesn't depend on whether a Gemini key happens to be set.
+    // Everything downstream uses `resolvedImageUrl`, never the caller's `imageUrl`.
+    let resolvedImageUrl: string | null = null;
+    if (imageUrl) {
+      resolvedImageUrl = resolveAllowedImageUrl(imageUrl);
+      if (!resolvedImageUrl) {
+        return res.status(400).json({
+          error: "That image URL isn't allowed. Send the image as base64 instead.",
+        });
+      }
     }
 
     // If a preset hint is provided, return rich verified botanical data immediately
@@ -136,8 +157,8 @@ app.post("/api/scan", scanBodyParser, async (req, res) => {
               mimeType,
             },
           };
-        } else if (imageUrl) {
-          const imgResp = await fetchWithTimeout(imageUrl, {}, 4000);
+        } else if (resolvedImageUrl) {
+          const imgResp = await fetchWithTimeout(resolvedImageUrl, {}, 4000);
           if (!imgResp || !imgResp.ok) {
             throw new Error("Could not download the preset image");
           }
@@ -1229,11 +1250,16 @@ app.get("/api/reverse-geocode", async (req, res) => {
   const cached = cacheGet<{ cityName: string; region: string }>(cacheKey);
   if (cached) return res.json({ ...cached, lat, lng });
 
-  // 1. Photon
+  // 1. Photon. Built from a constant base so the request target is assembled here, not
+  // interpolated from request data, even though both values are already validated numbers.
+  const photonUrl = new URL("https://photon.komoot.io/reverse");
+  photonUrl.searchParams.set("lat", String(lat));
+  photonUrl.searchParams.set("lon", String(lng));
+
   try {
     const photonData = await cachedJsonFetch(
       `reverse-photon:${coordKey(lat, lng)}`,
-      `https://photon.komoot.io/reverse?lat=${lat}&lon=${lng}`,
+      photonUrl.toString(),
       { headers: { "User-Agent": "AllerScan-PollenApp/1.0" } },
       2000,
       60 * 60 * 1000
@@ -1253,10 +1279,17 @@ app.get("/api/reverse-geocode", async (req, res) => {
   }
 
   // 2. Nominatim
+  const nominatimUrl = new URL("https://nominatim.openstreetmap.org/reverse");
+  nominatimUrl.searchParams.set("lat", String(lat));
+  nominatimUrl.searchParams.set("lon", String(lng));
+  nominatimUrl.searchParams.set("format", "json");
+  nominatimUrl.searchParams.set("zoom", "10");
+  nominatimUrl.searchParams.set("addressdetails", "1");
+
   try {
     const nomData = await cachedJsonFetch(
       `reverse-nominatim:${coordKey(lat, lng)}`,
-      `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&zoom=10&addressdetails=1`,
+      nominatimUrl.toString(),
       { headers: { "User-Agent": "AllerScan-PollenApp/1.0" } },
       2000,
       60 * 60 * 1000
