@@ -1,5 +1,6 @@
 import { EnvironmentalData, SeverityLevel, CustomAllergenMeta } from '../types';
 import { applySensitivity } from './sensitivity';
+import { emptySafeTable, withSafeKeys } from './safeKeys';
 
 /**
  * The offline estimate, used when the API can't be reached.
@@ -45,7 +46,8 @@ export function generateFallbackEnvData(
     return 'Low';
   };
 
-  const allergenCategoryMap: Record<string, { val: number; level: 'Low' | 'Moderate' | 'High' | 'Very High'; name: string; cat: 'tree' | 'grass' | 'weed' | 'mold' | 'indoor' }> = {
+  // Null-prototype and keyed by ids from stored data — see utils/safeKeys.
+  const allergenCategoryMap: Record<string, { val: number; level: 'Low' | 'Moderate' | 'High' | 'Very High'; name: string; cat: 'tree' | 'grass' | 'weed' | 'mold' | 'indoor' }> = Object.assign(emptySafeTable<{ val: number; level: 'Low' | 'Moderate' | 'High' | 'Very High'; name: string; cat: 'tree' | 'grass' | 'weed' | 'mold' | 'indoor' }>(), {
     oak: { val: rawTree, level: getPollenLevel(rawTree), name: 'Oak Tree', cat: 'tree' },
     birch: { val: rawTree, level: getPollenLevel(rawTree), name: 'Birch Tree', cat: 'tree' },
     cedar: { val: rawTree, level: getPollenLevel(rawTree), name: 'Mountain Cedar', cat: 'tree' },
@@ -67,7 +69,7 @@ export function generateFallbackEnvData(
     dust_mites: { val: 35, level: 'Moderate', name: 'Dust Mites', cat: 'indoor' },
     pet_dander_cat: { val: 40, level: 'Moderate', name: 'Cat Dander', cat: 'indoor' },
     pet_dander_dog: { val: 40, level: 'Moderate', name: 'Dog Dander', cat: 'indoor' },
-  };
+  });
 
   // Custom user-added allergens have no species-level reading; approximate them using
   // their chosen category's aggregate index, same as the live /api/pollen-aqi endpoint.
@@ -79,7 +81,7 @@ export function generateFallbackEnvData(
     indoor: { val: 35, level: 'Moderate' },
   };
 
-  Object.entries(customAllergens).forEach(([algId, meta]) => {
+  Object.entries(withSafeKeys(customAllergens)).forEach(([algId, meta]) => {
     const catVal = categoryLevelMap[meta.category] || categoryLevelMap.indoor;
     allergenCategoryMap[algId] = { ...catVal, name: meta.name, cat: meta.category };
   });
@@ -96,7 +98,7 @@ export function generateFallbackEnvData(
   let totalWeightedScore = 0;
   let totalWeight = 0;
 
-  Object.entries(userAllergens).forEach(([algId, severity]) => {
+  Object.entries(withSafeKeys(userAllergens)).forEach(([algId, severity]) => {
     const meta = allergenCategoryMap[algId];
     if (meta) {
       const severityWeight = severity === 'severe' ? 3 : severity === 'moderate' ? 2 : 1;

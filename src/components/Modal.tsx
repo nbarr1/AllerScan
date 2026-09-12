@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useId, useRef } from 'react';
 import { X } from 'lucide-react';
 
 // One dialog wrapper for every modal in the app.
@@ -39,7 +39,7 @@ export const Modal: React.FC<ModalProps> = ({
 }) => {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const previouslyFocused = useRef<HTMLElement | null>(null);
-  const titleId = useRef(`modal-title-${Math.random().toString(36).slice(2, 9)}`).current;
+  const titleId = useId();
 
   const handleKeyDown = useCallback(
     (event: KeyboardEvent) => {

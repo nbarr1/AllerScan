@@ -5,14 +5,19 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { DEFAULT_CITY_OPTIONS } from "./src/data/defaultCities.js";
 import { MASTER_ALLERGENS } from "./src/data/allergensDatabase.js";
 import { applySensitivity } from "./src/utils/sensitivity.js";
+import { emptySafeTable, withSafeKeys } from "./src/utils/safeKeys.js";
 
 // Category/name lookups for the built-in allergen database, shared by routes below that need
 // to match a real live pollen reading's dominant category against the user's saved allergens.
-const ALLERGEN_CATEGORY_BY_ID: Record<string, string> = Object.fromEntries(
-  MASTER_ALLERGENS.map((a) => [a.id, a.category])
+// Null-prototype: these are indexed with ids that came from a request, and a plain object would
+// answer `table["constructor"]` with an inherited function that passes a truthy guard.
+const ALLERGEN_CATEGORY_BY_ID: Record<string, string> = Object.assign(
+  emptySafeTable<string>(),
+  Object.fromEntries(MASTER_ALLERGENS.map((a) => [a.id, a.category]))
 );
-const ALLERGEN_NAME_BY_ID: Record<string, string> = Object.fromEntries(
-  MASTER_ALLERGENS.map((a) => [a.id, a.name])
+const ALLERGEN_NAME_BY_ID: Record<string, string> = Object.assign(
+  emptySafeTable<string>(),
+  Object.fromEntries(MASTER_ALLERGENS.map((a) => [a.id, a.name]))
 );
 
 const app = express();
@@ -83,20 +88,15 @@ function getGenAI() {
 // fetching an arbitrary caller-supplied URL would let anyone use this server to reach private
 // addresses (cloud metadata endpoints, localhost services) it can see and they can't.
 //
-// The values are the literal origins the request is rebuilt from. Validating the caller's string
-// and then fetching that same string still hands an attacker-controlled value to fetch(): it is
-// only safe for as long as `new URL()` and the fetch implementation agree about how to parse a
-// hostile URL, and that class of parser differential is exactly how allowlists get bypassed. So
-// the host that reaches fetch() is never the caller's — only the path and query survive.
+// Validating the caller's string and then fetching that same string still hands an
+// attacker-controlled value to fetch(): it is only safe for as long as `new URL()` and the fetch
+// implementation agree about how to parse a hostile URL, and that class of parser differential is
+// exactly how allowlists get bypassed. So the host that reaches fetch() is never the caller's —
+// the origin below is a literal, and only the path and query survive from the request.
 //
-// A Map rather than an object literal: `ALLOWED_IMAGE_ORIGINS["constructor"]` on a plain object
-// returns a truthy inherited value, which would sail past the lookup check below.
-const ALLOWED_IMAGE_ORIGINS = new Map<string, string>([
-  ["images.unsplash.com", "https://images.unsplash.com"],
-  ["plus.unsplash.com", "https://plus.unsplash.com"],
-]);
-
-/** Returns a server-constructed URL for an allowed preset image, or null to reject. */
+// Written as an explicit conditional over string literals rather than a lookup table: with two
+// hosts it is just as readable, there is no computed property access to get wrong, and the
+// constant origin is obvious to a reader and to static analysis alike.
 function resolveAllowedImageUrl(rawUrl: string): string | null {
   let parsed: URL;
   try {
@@ -106,10 +106,12 @@ function resolveAllowedImageUrl(rawUrl: string): string | null {
   }
   if (parsed.protocol !== "https:") return null;
 
-  const origin = ALLOWED_IMAGE_ORIGINS.get(parsed.hostname.toLowerCase());
-  if (!origin) return null;
+  const host = parsed.hostname.toLowerCase();
+  const path = `${parsed.pathname}${parsed.search}`;
 
-  return `${origin}${parsed.pathname}${parsed.search}`;
+  if (host === "images.unsplash.com") return `https://images.unsplash.com${path}`;
+  if (host === "plus.unsplash.com") return `https://plus.unsplash.com${path}`;
+  return null;
 }
 
 app.post("/api/scan", scanBodyParser, async (req, res) => {
@@ -544,7 +546,8 @@ app.get("/api/pollen-aqi", async (req, res) => {
 
   if (userAllergensJson) {
     try {
-      userAllergens = JSON.parse(userAllergensJson);
+      // Ids become computed property keys on the lookup tables below — see utils/safeKeys.
+      userAllergens = withSafeKeys(JSON.parse(userAllergensJson));
     } catch {
       // ignore parse error
     }
@@ -562,7 +565,7 @@ app.get("/api/pollen-aqi", async (req, res) => {
 
   if (customAllergensJson) {
     try {
-      customAllergens = JSON.parse(customAllergensJson);
+      customAllergens = withSafeKeys(JSON.parse(customAllergensJson));
     } catch {
       // ignore parse error
     }
@@ -812,7 +815,7 @@ app.get("/api/pollen-aqi", async (req, res) => {
     let totalWeightedScore = 0;
     let totalWeight = 0;
 
-    const allergenCategoryMap: Record<string, { val: number; level: 'Low' | 'Moderate' | 'High' | 'Very High' }> = {
+    const allergenCategoryMap: Record<string, { val: number; level: 'Low' | 'Moderate' | 'High' | 'Very High' }> = Object.assign(emptySafeTable<{ val: number; level: 'Low' | 'Moderate' | 'High' | 'Very High' }>(), {
       oak: { val: treeVal, level: pollenData.tree.level },
       birch: { val: treeVal, level: pollenData.tree.level },
       cedar: { val: treeVal, level: pollenData.tree.level },
@@ -834,9 +837,9 @@ app.get("/api/pollen-aqi", async (req, res) => {
       dust_mites: { val: 35, level: 'Moderate' },
       pet_dander_cat: { val: 40, level: 'Moderate' },
       pet_dander_dog: { val: 40, level: 'Moderate' },
-    };
+    });
 
-    const allergenNames: Record<string, { name: string; cat: 'tree' | 'grass' | 'weed' | 'mold' | 'indoor' }> = {
+    const allergenNames: Record<string, { name: string; cat: 'tree' | 'grass' | 'weed' | 'mold' | 'indoor' }> = Object.assign(emptySafeTable<{ name: string; cat: 'tree' | 'grass' | 'weed' | 'mold' | 'indoor' }>(), {
       oak: { name: 'Oak Tree', cat: 'tree' },
       birch: { name: 'Birch Tree', cat: 'tree' },
       cedar: { name: 'Mountain Cedar', cat: 'tree' },
@@ -858,7 +861,7 @@ app.get("/api/pollen-aqi", async (req, res) => {
       dust_mites: { name: 'Dust Mites', cat: 'indoor' },
       pet_dander_cat: { name: 'Cat Dander', cat: 'indoor' },
       pet_dander_dog: { name: 'Dog Dander', cat: 'indoor' },
-    };
+    });
 
     // Custom user-added allergens aren't in the built-in database above, so they have no
     // known species-level pollen reading. Approximate them using their chosen category's
@@ -1044,13 +1047,13 @@ app.get("/api/pollen-aqi", async (req, res) => {
     const estWeed = Math.min(95, Math.max(5, Math.round((28 + Math.abs(Math.sin(safeLng * 7)) * 42) * fallMultiplier)));
     const estMold = Math.min(90, Math.max(5, Math.round(22 + Math.abs(Math.cos(safeLat * 3)) * 30)));
 
-    const estByCategory: Record<string, number> = {
+    const estByCategory: Record<string, number> = Object.assign(emptySafeTable<number>(), {
       tree: estTree,
       grass: estGrass,
       weed: estWeed,
       mold: estMold,
       indoor: 35,
-    };
+    });
 
     const estMatched: Array<{
       id: string;
@@ -1332,7 +1335,7 @@ app.get("/api/pollen-hotspots", async (req, res) => {
 
     if (userAllergensJson) {
       try {
-        userAllergens = JSON.parse(userAllergensJson);
+        userAllergens = withSafeKeys(JSON.parse(userAllergensJson));
       } catch (e) {
         // ignore parse
       }

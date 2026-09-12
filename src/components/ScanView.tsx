@@ -15,6 +15,7 @@ import {
 import { MASTER_ALLERGENS } from '../data/allergensDatabase';
 import { SCAN_PRESET_SAMPLES, ScanPresetSample } from '../data/sampleScans';
 import { ScanResult, UserAllergenProfile, AllergenCategory } from '../types';
+import { isSafeObjectKey } from '../utils/safeKeys';
 
 interface ScanViewProps {
   userProfile: UserAllergenProfile;
@@ -241,9 +242,14 @@ export const ScanView: React.FC<ScanViewProps> = ({
         throw new Error('The scan service returned an unreadable result');
       }
 
-      const matchedId: string | undefined = scanData.matchedAllergenId;
-      const isUserAllergen = Boolean(matchedId && userProfile.allergens[matchedId]);
-      const userSeverity = isUserAllergen && matchedId ? userProfile.allergens[matchedId] : undefined;
+      // The id comes from the identifying model, so it's used as a lookup key only after the
+      // same key check the rest of the app applies — otherwise `allergens["constructor"]`
+      // reports a match and hands a function to the severity label.
+      const rawMatchedId: unknown = scanData.matchedAllergenId;
+      const matchedId =
+        typeof rawMatchedId === 'string' && isSafeObjectKey(rawMatchedId) ? rawMatchedId : undefined;
+      const userSeverity = matchedId ? userProfile.allergens[matchedId] : undefined;
+      const isUserAllergen = Boolean(userSeverity);
 
       // A real camera/upload scan that fell back to a canned result did NOT analyse the user's
       // photo — that has to be disclosed, not shown as a real identification.
