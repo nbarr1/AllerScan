@@ -105,13 +105,32 @@ function resolveAllowedImageUrl(rawUrl: string): string | null {
     return null;
   }
   if (parsed.protocol !== "https:") return null;
+  if (parsed.username || parsed.password) return null;
+  if (parsed.hash) return null;
+  if (parsed.port && parsed.port !== "443") return null;
 
   const host = parsed.hostname.toLowerCase();
-  const path = `${parsed.pathname}${parsed.search}`;
+  let origin: string | null = null;
+  if (host === "images.unsplash.com") origin = "https://images.unsplash.com";
+  if (host === "plus.unsplash.com") origin = "https://plus.unsplash.com";
+  if (!origin) return null;
 
-  if (host === "images.unsplash.com") return `https://images.unsplash.com${path}`;
-  if (host === "plus.unsplash.com") return `https://plus.unsplash.com${path}`;
-  return null;
+  const pathname = parsed.pathname;
+  if (!pathname.startsWith("/")) return null;
+  if (pathname.includes("..")) return null;
+  if (!/^\/[A-Za-z0-9\-._~/%]*$/.test(pathname)) return null;
+
+  const safeParams = new URLSearchParams();
+  const allowedParams = new Set(["w", "h", "fit", "crop", "fm", "q", "auto", "dpr"]);
+  for (const [k, v] of parsed.searchParams.entries()) {
+    if (!allowedParams.has(k)) continue;
+    if (v.length > 64) return null;
+    if (!/^[A-Za-z0-9\-._~]+$/.test(v)) return null;
+    safeParams.append(k, v);
+  }
+
+  const query = safeParams.toString();
+  return `${origin}${pathname}${query ? `?${query}` : ""}`;
 }
 
 app.post("/api/scan", scanBodyParser, async (req, res) => {
