@@ -110,6 +110,8 @@ Because the frontend calls the API on the same origin it's served from, the simp
 
 A native Android/iOS build via [Capacitor](https://capacitorjs.com/) is also possible — `@capacitor/core`, `/cli`, `/ios`, and `/android` are installed, and `capacitor.config.json` is present as a starting point. See `src/components/InstallAppModal.tsx` for the intended setup flow. Before running a native build, set `server.url` in `capacitor.config.json` to a reachable HTTPS instance of this same Express server (it's currently unset, which means `npx cap add ios|android` would bundle `dist/` locally instead). This matters beyond convenience: a locally-bundled WebView loads from a non-web origin (`capacitor://localhost` / `https://localhost`), which no HTTP-referrer restriction on `GOOGLE_MAPS_PLATFORM_KEY` can match — pointing at the real server origin is what makes that restriction meaningful. `GEMINI_API_KEY` and `GOOGLE_POLLEN_API_KEY` stay server-side either way.
 
+A native Kotlin app (Jetpack Compose) that calls the same API lives in `android-native/`. It doesn't need the web build or Capacitor; see [the Android app README](android-native/README.md) for how to build and install it.
+
 ## Project structure
 
 ```
