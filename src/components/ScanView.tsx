@@ -6,7 +6,6 @@ import {
   AlertTriangle,
   CheckCircle,
   Search,
-  XCircle,
   Info,
   History,
   Trash2,
@@ -27,14 +26,31 @@ interface ScanViewProps {
 /**
  * Longest edge, in pixels, for a stored scan photo. A modern phone camera produces a 3-8 MB data
  * URL; a handful of those exhausts the ~5 MB localStorage budget and the history silently stops
- * persisting. This is plenty for the thumbnail the history list shows, and the full-resolution
- * frame is still what gets sent to the model.
+ * persisting. This is plenty for the thumbnail the history list shows.
  */
 const STORED_IMAGE_MAX_EDGE = 900;
+
+/**
+ * Longest edge for the copy sent to the model. The full-resolution photo used to go up as-is, which
+ * is several MB of base64 — over what Vercel Functions accept (4.5 MB) and slower and costlier for
+ * Gemini. 1600 px keeps plenty of leaf and bark detail.
+ */
+const UPLOAD_IMAGE_MAX_EDGE = 1600;
+
+/** Stays under the server's 4 MB body limit with room for the JSON around it. */
+const MAX_UPLOAD_DATA_URL_LENGTH = 3_500_000;
+
+/** What the file picker accepts before resizing. The resized copy is what's sent. */
 const MAX_UPLOAD_BYTES = 15 * 1024 * 1024;
 
-/** Re-encodes a data URL down to `maxEdge` on its longest side. Returns the original on failure. */
-function downscaleDataUrl(dataUrl: string, maxEdge = STORED_IMAGE_MAX_EDGE): Promise<string> {
+/** An error whose message is already written for the person using the app. */
+class ScanError extends Error {}
+
+/**
+ * Re-encodes a data URL down to `maxEdge` on its longest side as JPEG. Returns the original when it
+ * already fits or when the browser can't decode it (HEIC outside Safari, for example).
+ */
+function downscaleDataUrl(dataUrl: string, maxEdge = STORED_IMAGE_MAX_EDGE, quality = 0.82): Promise<string> {
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {
@@ -53,7 +69,7 @@ function downscaleDataUrl(dataUrl: string, maxEdge = STORED_IMAGE_MAX_EDGE): Pro
       }
       ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
       try {
-        resolve(canvas.toDataURL('image/jpeg', 0.82));
+        resolve(canvas.toDataURL('image/jpeg', quality));
       } catch {
         resolve(dataUrl);
       }
@@ -188,28 +204,47 @@ export const ScanView: React.FC<ScanViewProps> = ({
     runScanAnalysis(preset.imageUrl, preset);
   };
 
+  /** A preset's reference data, shown as such when the model can't analyse the sample photo. */
+  const referenceResultFor = (preset: ScanPresetSample): ScanResult => {
+    const userSeverity = isSafeObjectKey(preset.matchedAllergenId)
+      ? userProfile.allergens[preset.matchedAllergenId]
+      : undefined;
+    return {
+      id: 'reference_' + preset.id,
+      timestamp: new Date().toISOString(),
+      imageUrl: preset.imageUrl,
+      speciesName: preset.speciesName,
+      scientificName: preset.scientificName,
+      category: preset.category,
+      isUserAllergen: Boolean(userSeverity),
+      matchedAllergenId: preset.matchedAllergenId,
+      userSeverity,
+      details: preset.details,
+      identifyingFeatures: preset.identifyingFeatures,
+      locationStr: '',
+      isReferenceSample: true,
+    };
+  };
+
   // Run the Gemini vision scan via /api/scan.
-  const runScanAnalysis = async (imgData: string, presetOverride?: ScanPresetSample) => {
+  const runScanAnalysis = async (imgData: string, preset?: ScanPresetSample) => {
     setIsScanning(true);
     setCurrentResult(null);
     setScanError(null);
-    lastScanRef.current = { image: imgData, preset: presetOverride };
+    lastScanRef.current = { image: imgData, preset };
 
     try {
-      const payload: Record<string, any> = imgData.startsWith('data:')
-        ? { imageBase64: imgData }
-        : { imageUrl: imgData };
-
-      if (presetOverride) {
-        payload.presetHint = {
-          speciesName: presetOverride.speciesName,
-          scientificName: presetOverride.scientificName,
-          category: presetOverride.category,
-          confidence: presetOverride.confidence,
-          matchedAllergenId: presetOverride.matchedAllergenId,
-          identifyingFeatures: presetOverride.identifyingFeatures,
-          details: presetOverride.details,
-        };
+      let payload: { imageBase64: string } | { imageUrl: string };
+      if (imgData.startsWith('data:')) {
+        const uploadImage = await downscaleDataUrl(imgData, UPLOAD_IMAGE_MAX_EDGE, 0.85);
+        if (uploadImage.length > MAX_UPLOAD_DATA_URL_LENGTH) {
+          throw new ScanError(
+            "This photo is still too large to send after resizing, usually because this browser can't read its format. Try a JPEG or PNG, or take one with the camera."
+          );
+        }
+        payload = { imageBase64: uploadImage };
+      } else {
+        payload = { imageUrl: imgData };
       }
 
       const resp = await fetch('/api/scan', {
@@ -218,28 +253,30 @@ export const ScanView: React.FC<ScanViewProps> = ({
         body: JSON.stringify(payload),
       });
 
+      let resData: any = null;
+      try {
+        resData = await resp.json();
+      } catch {
+        // Not JSON (a proxy error page, for instance); handled by the status checks below.
+      }
+
       if (!resp.ok) {
-        throw new Error(`The scan service returned ${resp.status}`);
+        // The model couldn't look at a sample photo, but the sample's own reference data is still
+        // worth showing — labelled as exactly that, and not saved as a scan.
+        if (preset && (resp.status === 502 || resp.status === 503)) {
+          setCurrentResult(referenceResultFor(preset));
+          return;
+        }
+        throw new ScanError(
+          typeof resData?.error === 'string'
+            ? resData.error
+            : `The scan service returned an error (${resp.status}). Try again in a moment.`
+        );
       }
 
-      const resData = await resp.json();
-      let scanData = resData?.data;
-
-      // A preset carries verified botanical data, so it can stand in if the server fell back.
-      if (presetOverride && (!scanData || resData.source === 'local-heuristic')) {
-        scanData = {
-          speciesName: presetOverride.speciesName,
-          scientificName: presetOverride.scientificName,
-          category: presetOverride.category,
-          confidence: presetOverride.confidence,
-          matchedAllergenId: presetOverride.matchedAllergenId,
-          identifyingFeatures: presetOverride.identifyingFeatures,
-          details: presetOverride.details,
-        };
-      }
-
-      if (!scanData || typeof scanData !== 'object' || !scanData.speciesName) {
-        throw new Error('The scan service returned an unreadable result');
+      const scanData = resData?.data;
+      if (!scanData || typeof scanData !== 'object' || typeof scanData.speciesName !== 'string') {
+        throw new ScanError('The scan service returned an unreadable result. Try again in a moment.');
       }
 
       // The id comes from the identifying model, so it's used as a lookup key only after the
@@ -251,11 +288,7 @@ export const ScanView: React.FC<ScanViewProps> = ({
       const userSeverity = matchedId ? userProfile.allergens[matchedId] : undefined;
       const isUserAllergen = Boolean(userSeverity);
 
-      // A real camera/upload scan that fell back to a canned result did NOT analyse the user's
-      // photo — that has to be disclosed, not shown as a real identification.
-      const isSimulatedResult = !presetOverride && resData.source === 'local-heuristic';
-
-      // Stored at a size that fits localStorage; the full-resolution frame went to the model.
+      // Stored at a size that fits localStorage.
       const storedImage = imgData.startsWith('data:') ? await downscaleDataUrl(imgData) : imgData;
 
       const newScanResult: ScanResult = {
@@ -277,18 +310,19 @@ export const ScanView: React.FC<ScanViewProps> = ({
         locationStr: [userProfile.location.cityName, userProfile.location.region.split(',')[0]]
           .filter(Boolean)
           .join(', '),
-        isSimulatedResult,
       };
 
       setCurrentResult(newScanResult);
       onAddScan(newScanResult);
     } catch (err) {
-      console.error('Scan error:', err);
+      // A ScanError is an expected, explained outcome (AI vision unavailable, photo too large).
+      if (err instanceof ScanError) console.warn('Scan not completed:', err.message);
+      else console.error('Scan error:', err);
       setScanError(
-        err instanceof TypeError
+        err instanceof ScanError
+          ? err.message
+          : err instanceof TypeError
           ? "Couldn't reach the scan service. Check your connection and try again."
-          : err instanceof Error
-          ? `${err.message}. Try again in a moment.`
           : 'The scan failed. Try again in a moment.'
       );
     } finally {
@@ -483,13 +517,17 @@ export const ScanView: React.FC<ScanViewProps> = ({
             ) : currentResult ? (
               <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-lg space-y-5">
 
-                {/* SIMULATED RESULT DISCLOSURE */}
-                {currentResult.isSimulatedResult && (
+                {/* REFERENCE SAMPLE DISCLOSURE */}
+                {currentResult.isReferenceSample && (
                   <div className="p-4 rounded-2xl border-2 border-dashed border-amber-400 bg-amber-50 flex items-start gap-3">
-                    <XCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" aria-hidden="true" />
+                    <Info className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" aria-hidden="true" />
                     <div className="text-xs text-amber-900">
-                      <span className="font-black block">AI Vision Unavailable — Example Result Shown</span>
-                      <span>Gemini could not analyze your photo right now, so this is a placeholder example, not a real identification of your image. Try again shortly.</span>
+                      <span className="font-black block">Reference sample — not an AI analysis</span>
+                      <span>
+                        AI vision isn't available right now, so this is the sample's own reference
+                        information rather than an analysis of the photo. It isn't saved to your
+                        scan history.
+                      </span>
                     </div>
                   </div>
                 )}
@@ -510,14 +548,15 @@ export const ScanView: React.FC<ScanViewProps> = ({
                       {currentResult.isUserAllergen ? 'Match found in your profile' : 'Not in your allergen profile'}
                     </h3>
                     <p className="text-xs font-semibold mt-1">
+                      {currentResult.isReferenceSample ? 'This sample is ' : 'Identified '}
                       {currentResult.isUserAllergen ? (
                         <>
-                          Identified <strong>{currentResult.speciesName}</strong> — listed as one of your{' '}
+                          <strong>{currentResult.speciesName}</strong> — listed as one of your{' '}
                           <span className="underline font-bold capitalize">{currentResult.userSeverity} severity</span> allergens.
                         </>
                       ) : (
                         <>
-                          Identified <strong>{currentResult.speciesName}</strong> — this species is not in your current profile list.
+                          <strong>{currentResult.speciesName}</strong> — this species is not in your current profile list.
                         </>
                       )}
                     </p>
@@ -528,7 +567,7 @@ export const ScanView: React.FC<ScanViewProps> = ({
                 <div className="flex justify-between items-start border-b border-slate-100 pb-4 gap-4">
                   <div>
                     <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400 block">
-                      Species Identification
+                      {currentResult.isReferenceSample ? 'Sample reference' : 'Species Identification'}
                     </span>
                     <h2 className="text-xl font-black text-slate-900">{currentResult.speciesName}</h2>
                     {currentResult.scientificName && (
@@ -662,13 +701,23 @@ export const ScanView: React.FC<ScanViewProps> = ({
                 <div className="truncate flex-1">
                   <div className="flex items-center gap-1.5">
                     <span className="text-xs font-extrabold text-slate-900 truncate">{scan.speciesName}</span>
-                    <span
-                      className={`w-2 h-2 rounded-full shrink-0 ${scan.isUserAllergen ? 'bg-rose-500' : 'bg-emerald-500'}`}
-                      aria-hidden="true"
-                    />
-                    <span className="sr-only">
-                      {scan.isUserAllergen ? 'Matches your profile' : 'Not in your profile'}
-                    </span>
+                    {scan.isSimulatedResult ? (
+                      // Saved by an older build that substituted a canned example when AI vision
+                      // was down. It says nothing about the photo, so it doesn't claim a match.
+                      <span className="px-1.5 py-0.5 rounded-md bg-amber-100 text-amber-800 text-[9px] font-bold shrink-0">
+                        Example, not an identification
+                      </span>
+                    ) : (
+                      <>
+                        <span
+                          className={`w-2 h-2 rounded-full shrink-0 ${scan.isUserAllergen ? 'bg-rose-500' : 'bg-emerald-500'}`}
+                          aria-hidden="true"
+                        />
+                        <span className="sr-only">
+                          {scan.isUserAllergen ? 'Matches your profile' : 'Not in your profile'}
+                        </span>
+                      </>
+                    )}
                   </div>
                   <div className="text-[11px] text-slate-400 truncate">{scan.scientificName}</div>
                   <div className="text-[10px] text-slate-400 flex items-center gap-2 mt-1">

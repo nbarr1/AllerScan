@@ -8,29 +8,30 @@ import {
 } from '../types';
 import { MAX_NOTIFICATIONS } from './notifications';
 
-const COORD_PROTECTION_PREFIX = 'encv1:';
-const COORD_PROTECTION_KEY = 'allerscan_coord_key_v1';
+// Saved coordinates are OBFUSCATED, NOT ENCRYPTED: XOR with a fixed key that ships in this very
+// bundle, then base64. That keeps an exact position from being readable at a glance in devtools
+// or a storage export, and nothing more — anyone with this code can reverse it, and the city name
+// is stored in plain text beside it. Don't treat this as a security boundary or build on it as
+// one. The `encv1:` prefix is historical and kept only so profiles saved by earlier builds load.
+const COORD_OBFUSCATION_PREFIX = 'encv1:';
+const COORD_OBFUSCATION_KEY = 'allerscan_coord_key_v1';
 
-function getCoordProtectionKey(): string {
-  return COORD_PROTECTION_KEY;
-}
-
-function protectNumber(value: number): string {
-  const key = getCoordProtectionKey();
+function obfuscateNumber(value: number): string {
+  const key = COORD_OBFUSCATION_KEY;
   const payload = `${value}`;
   let out = '';
   for (let i = 0; i < payload.length; i += 1) {
     out += String.fromCharCode(payload.charCodeAt(i) ^ key.charCodeAt(i % key.length));
   }
-  return `${COORD_PROTECTION_PREFIX}${btoa(out)}`;
+  return `${COORD_OBFUSCATION_PREFIX}${btoa(out)}`;
 }
 
-function unprotectNumber(value: unknown): number | null {
-  if (typeof value === 'number') return value; // backward compatibility for existing plaintext data
-  if (typeof value !== 'string' || !value.startsWith(COORD_PROTECTION_PREFIX)) return null;
+function deobfuscateNumber(value: unknown): number | null {
+  if (typeof value === 'number') return value; // profiles saved before obfuscation was added
+  if (typeof value !== 'string' || !value.startsWith(COORD_OBFUSCATION_PREFIX)) return null;
   try {
-    const key = getCoordProtectionKey();
-    const encoded = value.slice(COORD_PROTECTION_PREFIX.length);
+    const key = COORD_OBFUSCATION_KEY;
+    const encoded = value.slice(COORD_OBFUSCATION_PREFIX.length);
     const raw = atob(encoded);
     let decoded = '';
     for (let i = 0; i < raw.length; i += 1) {
@@ -43,20 +44,20 @@ function unprotectNumber(value: unknown): number | null {
   }
 }
 
-function protectProfileForStorage(profile: UserAllergenProfile): UserAllergenProfile {
+function obfuscateProfileForStorage(profile: UserAllergenProfile): UserAllergenProfile {
   return {
     ...profile,
     location: {
       ...profile.location,
-      lat: protectNumber(profile.location.lat) as unknown as number,
-      lng: protectNumber(profile.location.lng) as unknown as number,
+      lat: obfuscateNumber(profile.location.lat) as unknown as number,
+      lng: obfuscateNumber(profile.location.lng) as unknown as number,
     },
   };
 }
 
-function unprotectProfileFromStorage(profile: UserAllergenProfile): UserAllergenProfile {
-  const lat = unprotectNumber((profile.location as unknown as { lat: unknown }).lat);
-  const lng = unprotectNumber((profile.location as unknown as { lng: unknown }).lng);
+function deobfuscateProfileFromStorage(profile: UserAllergenProfile): UserAllergenProfile {
+  const lat = deobfuscateNumber((profile.location as unknown as { lat: unknown }).lat);
+  const lng = deobfuscateNumber((profile.location as unknown as { lng: unknown }).lng);
   return {
     ...profile,
     location: {
@@ -74,7 +75,15 @@ const STORAGE_KEYS = {
   SCANS: 'allerscan_scans_v1',
   SETTINGS: 'allerscan_settings_v1',
   NOTIFS: 'allerscan_notifs_v1',
+  NOTIFS_DISMISSED: 'allerscan_notifs_dismissed_v1',
 };
+
+/**
+ * Ids of alerts the user cleared. Alert ids are deterministic (type + day + subject), so without
+ * this record "Clear all" emptied the drawer and the next render regenerated the same alerts,
+ * unread. Bounded: ids carry their day, so old ones stop mattering.
+ */
+export const MAX_DISMISSED_NOTIFICATIONS = 200;
 
 /**
  * Scan results carry their photo inline as a data URL, so the history is by far the largest
@@ -154,9 +163,9 @@ export function saveStoredData<T>(key: string, data: T): boolean {
 
 export const StorageService = {
   getProfile: () =>
-    unprotectProfileFromStorage(loadStoredData<UserAllergenProfile>(STORAGE_KEYS.PROFILE, DEFAULT_PROFILE)),
+    deobfuscateProfileFromStorage(loadStoredData<UserAllergenProfile>(STORAGE_KEYS.PROFILE, DEFAULT_PROFILE)),
   saveProfile: (p: UserAllergenProfile) =>
-    saveStoredData(STORAGE_KEYS.PROFILE, protectProfileForStorage(p)),
+    saveStoredData(STORAGE_KEYS.PROFILE, obfuscateProfileForStorage(p)),
 
   getSchedule: () => loadStoredData<ImmunotherapySchedule>(STORAGE_KEYS.SCHEDULE, DEFAULT_SCHEDULE),
   saveSchedule: (s: ImmunotherapySchedule) => saveStoredData(STORAGE_KEYS.SCHEDULE, s),
@@ -173,4 +182,11 @@ export const StorageService = {
   getNotifications: () => loadStoredData<AppNotification[]>(STORAGE_KEYS.NOTIFS, INITIAL_NOTIFICATIONS),
   saveNotifications: (n: AppNotification[]) =>
     saveStoredData(STORAGE_KEYS.NOTIFS, n.slice(0, MAX_NOTIFICATIONS)),
+
+  getDismissedNotificationIds: () => {
+    const stored = loadStoredData<unknown>(STORAGE_KEYS.NOTIFS_DISMISSED, []);
+    return Array.isArray(stored) ? stored.filter((id): id is string => typeof id === 'string') : [];
+  },
+  saveDismissedNotificationIds: (ids: string[]) =>
+    saveStoredData(STORAGE_KEYS.NOTIFS_DISMISSED, ids.slice(-MAX_DISMISSED_NOTIFICATIONS)),
 };

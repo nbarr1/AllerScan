@@ -17,6 +17,17 @@ const SHELL_CACHE = `allerscan-shell-${VERSION}`;
 const ASSET_CACHE = `allerscan-assets-${VERSION}`;
 const SHELL_URL = '/';
 
+// Every deploy produces new hashed filenames and VERSION never changes, so without a cap the asset
+// cache kept every build's bundles forever. A few builds' worth is plenty for offline use.
+const MAX_ASSET_ENTRIES = 60;
+
+/** Drops the oldest entries (Cache keys come back in insertion order) once the cap is passed. */
+function trimCache(cacheName, maxEntries) {
+  return caches.open(cacheName).then((cache) =>
+    cache.keys().then((keys) => Promise.all(keys.slice(0, Math.max(0, keys.length - maxEntries)).map((key) => cache.delete(key))))
+  );
+}
+
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches
@@ -89,7 +100,11 @@ self.addEventListener('fetch', (event) => {
         .then((response) => {
           if (response && response.status === 200 && response.type === 'basic') {
             const copy = response.clone();
-            caches.open(ASSET_CACHE).then((cache) => cache.put(request, copy)).catch(() => undefined);
+            caches
+              .open(ASSET_CACHE)
+              .then((cache) => cache.put(request, copy))
+              .then(() => trimCache(ASSET_CACHE, MAX_ASSET_ENTRIES))
+              .catch(() => undefined);
           }
           return response;
         })

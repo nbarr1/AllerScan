@@ -20,4 +20,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run lint
+      - run: npm test
       - run: npm run build
+      # Starts the production bundle and requests a few pages. Lint and build both passed while the
+      # production server crashed on startup, because nothing ran it.
+      - run: npm run test:smoke

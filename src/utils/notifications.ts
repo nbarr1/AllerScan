@@ -44,25 +44,29 @@ interface GenerateArgs {
   schedule: ImmunotherapySchedule;
   settings: NotificationSettings;
   existing: AppNotification[];
+  /** Ids the user cleared. They stay cleared, even though the condition behind them still holds. */
+  dismissed?: Iterable<string>;
 }
 
 /**
- * Returns only the notifications that don't already exist. Ids are deterministic (type + local
- * day + subject), so re-running this on every refresh never produces duplicates, and a user who
- * cleared the drawer doesn't get yesterday's alerts back — the day key has moved on.
+ * Returns only the notifications that don't already exist and weren't cleared. Ids are
+ * deterministic (type + local day + subject), so re-running this on every refresh never produces
+ * duplicates. Clearing the drawer used to bring today's alerts straight back, unread, because an
+ * empty drawer looked the same as one that had never had them; `dismissed` is the difference.
  */
 export function generateNotifications({
   envData,
   schedule,
   settings,
   existing,
+  dismissed = [],
 }: GenerateArgs): AppNotification[] {
   const now = new Date();
   if (isWithinQuietHours(settings, now)) return [];
 
   const today = toLocalDateKey(now);
   const timestamp = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  const seen = new Set(existing.map((n) => n.id));
+  const seen = new Set([...existing.map((n) => n.id), ...dismissed]);
   const created: AppNotification[] = [];
 
   const push = (notification: AppNotification) => {

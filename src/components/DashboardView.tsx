@@ -20,7 +20,8 @@ import {
   Thermometer,
   Droplets,
   Radio,
-  RefreshCw
+  RefreshCw,
+  Minus
 } from 'lucide-react';
 import { EnvironmentalData, ImmunotherapySchedule, UserAllergenProfile } from '../types';
 import { TabType } from './Navigation';
@@ -94,6 +95,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   } = envData;
 
   const riskTheme = themeForScore(overallPersonalRiskScore);
+  const scoreBasis = envData.scoreBasis ?? 'profile';
+  const unscoredAllergens = envData.unscoredAllergens ?? [];
+  const savedAllergenCount = Object.keys(userProfile.allergens).length;
+  const forecastIsPersonal = forecast.some((day) => day.basis === 'profile');
   const isLiveWeatherSource = Boolean(dataSource && dataSource.toLowerCase().includes('live'));
   // The pollen figures have their own provenance: Open-Meteo's weather call can succeed for a
   // point its pollen sensors don't cover, and those two facts must not share one "Live" badge.
@@ -197,22 +202,47 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 </p>
               )}
 
+              {/* The headline always agrees with the badge beside it. It used to say "Low Environmental
+                  Risk" whenever nothing matched — including for people with no saved allergens,
+                  whose score is the general outdoor level and can be High. */}
               <h1 className="text-xl sm:text-2xl font-extrabold tracking-tight">
                 {matchedActiveAllergens.length > 0 ? (
                   <>
-                    ⚠️ <span className="text-amber-400">{matchedActiveAllergens.length} of your allergens</span> active in {locationName}
+                    ⚠️{' '}
+                    <span className="text-amber-400">
+                      {matchedActiveAllergens.length} of your allergen{matchedActiveAllergens.length === 1 ? '' : 's'}
+                    </span>{' '}
+                    active in {locationName}
                   </>
+                ) : scoreBasis === 'profile' ? (
+                  <>{riskCategory} risk from your allergens in {locationName}</>
                 ) : (
-                  <>Low Environmental Risk in {locationName}</>
+                  <>{riskCategory} overall pollen &amp; mold levels in {locationName}</>
                 )}
               </h1>
 
               <p className="text-xs text-slate-300 leading-relaxed max-w-md">
-                Matched against your profile ({Object.keys(userProfile.allergens).length} saved allergens).
-                {matchedActiveAllergens.length > 0
-                  ? ` Top triggers today: ${matchedActiveAllergens.map((m) => m.name).join(', ')}.`
-                  : ' All matched pollen triggers are at safe low levels.'}
+                {scoreBasis === 'profile'
+                  ? matchedActiveAllergens.length > 0
+                    ? `Weighted by your saved allergens. Top triggers today: ${matchedActiveAllergens.map((m) => m.name).join(', ')}.`
+                    : 'Weighted by your saved allergens. None of them is at a moderate level or above right now.'
+                  : savedAllergenCount === 0
+                  ? "You haven't saved any allergens, so this is the overall outdoor level. Add yours in My Allergens to personalize it."
+                  : "None of your saved allergens can be scored from today's outdoor data, so this is the overall outdoor level."}
               </p>
+
+              {unscoredAllergens.length > 0 && (
+                <p className="text-[11px] text-slate-400 leading-relaxed max-w-md flex items-start gap-1.5">
+                  <Info className="w-3.5 h-3.5 shrink-0 mt-0.5" aria-hidden="true" />
+                  <span>
+                    Not in this score:{' '}
+                    {unscoredAllergens
+                      .map((a) => `${a.name} (${a.reason === 'indoor' ? "indoor — outdoor data doesn't measure it" : `no ${a.category} reading here`})`)
+                      .join(', ')}
+                    .
+                  </span>
+                </p>
+              )}
             </div>
           </div>
 
@@ -318,24 +348,45 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               the forecast bars and the AQI pill — see utils/severity.ts. */}
           {POLLEN_TILES.map(({ key, label, Icon, iconClass }) => {
             const reading = pollen[key];
-            const tileTheme = themeForLevel(reading.level);
             const species = reading.topSpecies?.filter(Boolean) ?? [];
+            const TrendIcon =
+              reading.trend === 'rising' ? ArrowUpRight : reading.trend === 'falling' ? ArrowDownRight : Minus;
             return (
               <div key={key} className="p-4 bg-white rounded-2xl border border-slate-200 shadow-xs space-y-2">
                 <div className="flex justify-between items-center">
                   <div className={`p-2 rounded-xl ${iconClass}`}>
                     <Icon className="w-4 h-4" aria-hidden="true" />
                   </div>
-                  <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full border ${tileTheme.badge}`}>
-                    {reading.level}
+                  <span
+                    className={`text-[11px] font-bold px-2 py-0.5 rounded-full border ${
+                      reading.level ? themeForLevel(reading.level).badge : 'bg-slate-100 text-slate-600 border-slate-200'
+                    }`}
+                  >
+                    {reading.level ?? 'No reading'}
                   </span>
                 </div>
                 <div>
+                  {/* A category the source didn't report is "not reported", not 0/100. */}
                   <div className="text-2xl font-black text-slate-900">
-                    {reading.value} <span className="text-xs text-slate-400 font-normal">/100</span>
+                    {reading.value === null ? (
+                      <span className="text-sm font-semibold text-slate-400">Not reported</span>
+                    ) : (
+                      <>
+                        {reading.value} <span className="text-xs text-slate-400 font-normal">/100</span>
+                      </>
+                    )}
                   </div>
                   <div className="text-xs font-bold text-slate-700 mt-0.5">{label}</div>
                 </div>
+                {reading.trend && (
+                  <p className="text-[10px] font-semibold text-slate-500 flex items-center gap-1" title="Today's forecast peak compared with tomorrow's">
+                    <TrendIcon className="w-3 h-3" aria-hidden="true" />
+                    {reading.trend === 'rising' ? 'Rising tomorrow' : reading.trend === 'falling' ? 'Falling tomorrow' : 'Steady tomorrow'}
+                  </p>
+                )}
+                {reading.estimateNote && (
+                  <p className="text-[10px] font-semibold text-amber-700">{reading.estimateNote}</p>
+                )}
                 {species.length > 0 && (
                   <p className="text-[10px] text-slate-500 truncate" title={species.join(', ')}>
                     {species.join(', ')}
@@ -408,12 +459,32 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         
         {/* 5-Day Forecast Trend */}
         <div className="lg:col-span-7 bg-white p-5 sm:p-6 rounded-3xl border border-slate-200 shadow-xs space-y-4">
-          <h2 className="text-sm font-extrabold text-slate-900 flex items-center justify-between">
+          <h2 className="text-sm font-extrabold text-slate-900 flex items-center justify-between gap-2">
             <span className="flex items-center gap-2">
-              <TrendingUp className="w-4 h-4 text-emerald-600" /> 5-Day Personalized Risk Forecast
+              <TrendingUp className="w-4 h-4 text-emerald-600" aria-hidden="true" /> 5-Day Pollen Forecast
             </span>
-            <span className="text-xs text-slate-400 font-normal">Next 5 Days</span>
+            {envData.forecastSource && (
+              <span className="text-[11px] text-slate-400 font-normal text-right">{envData.forecastSource}</span>
+            )}
           </h2>
+
+          {/* Only real forecast data is shown. It used to be today's value plus fixed daily offsets. */}
+          {forecast.length === 0 ? (
+            <p className="text-xs text-slate-500 bg-slate-50 border border-slate-100 rounded-2xl p-4 leading-relaxed">
+              No pollen forecast is available for {locationName}.{' '}
+              {isPollenModeled
+                ? "Live pollen data doesn't cover this location, and repeating an estimate for five days wouldn't be a forecast."
+                : "The live pollen source didn't return any forecast days."}{' '}
+              Forecasts come from the Google Pollen API, when the server has a key for it, or from
+              Open-Meteo, whose pollen data covers Europe only.
+            </p>
+          ) : (
+            <p className="text-[11px] text-slate-500">
+              {forecastIsPersonal
+                ? "Each day's peak, scored against your saved allergens. Pollen only — nothing forecasts mold."
+                : "Each day's peak across tree, grass and weed pollen. None of your saved allergens has a pollen forecast, so this isn't personalized."}
+            </p>
+          )}
 
           <div className="space-y-2.5">
             {forecast.map((day, idx) => (
@@ -429,7 +500,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 {/* Progress Bar */}
                 <div className="flex-1 space-y-1">
                   <div className="flex justify-between text-[11px] font-semibold text-slate-600">
-                    <span>Dominant: {day.dominantAllergen}</span>
+                    <span>Highest: {day.dominantAllergen}</span>
                     <span className="font-extrabold text-slate-800">{day.riskLevel} ({day.overallScore})</span>
                   </div>
                   <div className="w-full h-2 bg-slate-200 rounded-full overflow-hidden">
