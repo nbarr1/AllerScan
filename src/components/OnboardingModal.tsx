@@ -18,6 +18,7 @@ import { Modal } from './Modal';
 import { MASTER_ALLERGENS, ALLERGEN_CATEGORIES } from '../data/allergensDatabase';
 import { DEFAULT_CITY_OPTIONS } from '../data/defaultCities';
 import { UserAllergenProfile, SeverityLevel, AllergenCategory } from '../types';
+import { coarseCoordinate } from '../utils/coords';
 
 interface OnboardingLocation {
   cityName: string;
@@ -131,7 +132,10 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
       async (pos) => {
         const { latitude, longitude } = pos.coords;
         try {
-          const resp = await fetch(`/api/reverse-geocode?lat=${latitude}&lng=${longitude}`);
+          // Rounded to ~1 km before it leaves the device; the profile keeps the precise position.
+          const resp = await fetch(
+            `/api/reverse-geocode?lat=${coarseCoordinate(latitude)}&lng=${coarseCoordinate(longitude)}`
+          );
           if (resp.ok) {
             const place = await resp.json();
             if (place && place.cityName) {

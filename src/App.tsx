@@ -1,22 +1,35 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, lazy } from 'react';
 import { Header } from './components/Header';
 import { Navigation, TabType } from './components/Navigation';
 import { DashboardView } from './components/DashboardView';
-import { PollenHeatmapView } from './components/PollenHeatmapView';
 import { ScanView } from './components/ScanView';
 import { ShotsView } from './components/ShotsView';
-import { HistoryView } from './components/HistoryView';
 import { ProfileView } from './components/ProfileView';
 import { SettingsView } from './components/SettingsView';
 import { OnboardingModal } from './components/OnboardingModal';
 import { NotificationDrawer } from './components/NotificationDrawer';
 import { ConfirmDialog } from './components/Modal';
-import { StorageService, DEFAULT_PROFILE, DEFAULT_SCHEDULE, DEFAULT_SETTINGS, INITIAL_NOTIFICATIONS, INITIAL_SYMPTOMS, INITIAL_SCANS, MAX_STORED_SCANS } from './utils/storage';
+import { LazyView } from './components/LazyView';
+import { StorageService, DEFAULT_PROFILE, DEFAULT_SCHEDULE, DEFAULT_SETTINGS, INITIAL_NOTIFICATIONS, INITIAL_SYMPTOMS, INITIAL_SCANS, MAX_STORED_SCANS, MAX_DISMISSED_NOTIFICATIONS } from './utils/storage';
 import { generateFallbackEnvData } from './utils/fallbackData';
 import { generateNotifications, MAX_NOTIFICATIONS } from './utils/notifications';
 import { daysFromToday } from './utils/dates';
+import { coarseCoordinate } from './utils/coords';
 import { UserAllergenProfile, ImmunotherapySchedule, SymptomLog, ScanResult, NotificationSettings, AppNotification, EnvironmentalData, SeverityLevel, CustomAllergenMeta } from './types';
 import { ShieldAlert, AlertCircle, X } from 'lucide-react';
+
+// The map (Google Maps) and the symptom chart (Recharts) are most of the bundle, and most visits
+// never open either tab. Loading them on demand took the initial bundle from 822 kB.
+const PollenHeatmapView = lazy(() =>
+  import('./components/PollenHeatmapView').then((m) => ({ default: m.PollenHeatmapView }))
+);
+const HistoryView = lazy(() => import('./components/HistoryView').then((m) => ({ default: m.HistoryView })));
+
+/**
+ * How long the app waits for /api/pollen-aqi before showing the offline estimate. The server's
+ * own worst case is about 4.5 s (2 s geocoding, then 2.5 s for its parallel data fetches).
+ */
+const ENV_REQUEST_TIMEOUT_MS = 8000;
 
 export default function App() {
   const [userProfile, setUserProfile] = useState<UserAllergenProfile>(StorageService.getProfile);
@@ -25,6 +38,9 @@ export default function App() {
   const [scanHistory, setScanHistory] = useState<ScanResult[]>(StorageService.getScans);
   const [settings, setSettings] = useState<NotificationSettings>(StorageService.getSettings);
   const [notifications, setNotifications] = useState<AppNotification[]>(StorageService.getNotifications);
+  const [dismissedNotificationIds, setDismissedNotificationIds] = useState<string[]>(
+    StorageService.getDismissedNotificationIds
+  );
 
   const [activeTab, setActiveTab] = useState<TabType>('dashboard');
   const [showNotifications, setShowNotifications] = useState(false);
@@ -66,20 +82,25 @@ export default function App() {
     const controller = new AbortController();
     envAbort.current = controller;
     setIsEnvLoading(true);
-    const timer = setTimeout(() => controller.abort(), 6000);
+    const timer = setTimeout(() => controller.abort(), ENV_REQUEST_TIMEOUT_MS);
 
     try {
-      let url = `/api/pollen-aqi?locationName=${encodeURIComponent(locationStr)}&userAllergens=${encodeURIComponent(JSON.stringify(allergensMap))}`;
-      if (lat !== undefined && lng !== undefined) {
-        url += `&lat=${lat}&lng=${lng}`;
-      }
-      if (customAllergens && Object.keys(customAllergens).length > 0) {
-        url += `&customAllergens=${encodeURIComponent(JSON.stringify(customAllergens))}`;
-      }
-      if (sensitivityFactor !== undefined) {
-        url += `&sensitivityFactor=${sensitivityFactor}`;
-      }
-      const resp = await fetch(url, { signal: controller.signal });
+      // A POST body rather than a query string: the allergen profile and position used to be in
+      // the URL, which hosting platforms write to their request logs.
+      const hasCoords = lat !== undefined && lng !== undefined && Number.isFinite(lat) && Number.isFinite(lng);
+      const resp = await fetch('/api/pollen-aqi', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          locationName: locationStr,
+          lat: hasCoords ? coarseCoordinate(lat) : undefined,
+          lng: hasCoords ? coarseCoordinate(lng) : undefined,
+          userAllergens: allergensMap,
+          customAllergens,
+          sensitivityFactor,
+        }),
+        signal: controller.signal,
+      });
       if (!resp.ok) {
         throw new Error(`Server returned ${resp.status}`);
       }
@@ -136,14 +157,20 @@ export default function App() {
   useEffect(() => () => envAbort.current?.abort(), []);
 
   // Produce the in-app alerts the notification settings describe. Deterministic ids mean this can
-  // run on every refresh without ever duplicating an alert.
+  // run on every refresh without ever duplicating an alert, and cleared ids stay cleared.
   useEffect(() => {
-    const fresh = generateNotifications({ envData, schedule, settings, existing: notifications });
+    const fresh = generateNotifications({
+      envData,
+      schedule,
+      settings,
+      existing: notifications,
+      dismissed: dismissedNotificationIds,
+    });
     if (fresh.length === 0) return;
     const merged = [...fresh, ...notifications].slice(0, MAX_NOTIFICATIONS);
     setNotifications(merged);
     StorageService.saveNotifications(merged);
-  }, [envData, schedule, settings, notifications]);
+  }, [envData, schedule, settings, notifications, dismissedNotificationIds]);
 
   // Update profile
   const handleUpdateProfile = (updated: UserAllergenProfile) => {
@@ -213,6 +240,7 @@ export default function App() {
     StorageService.saveScans(INITIAL_SCANS);
     StorageService.saveSettings(DEFAULT_SETTINGS);
     StorageService.saveNotifications(INITIAL_NOTIFICATIONS);
+    StorageService.saveDismissedNotificationIds([]);
 
     setUserProfile(DEFAULT_PROFILE);
     setSchedule(DEFAULT_SCHEDULE);
@@ -220,6 +248,7 @@ export default function App() {
     setScanHistory(INITIAL_SCANS);
     setSettings(DEFAULT_SETTINGS);
     setNotifications(INITIAL_NOTIFICATIONS);
+    setDismissedNotificationIds([]);
     setStorageWarning(null);
     setShowResetConfirm(false);
     setActiveTab('dashboard');
@@ -239,7 +268,14 @@ export default function App() {
     StorageService.saveNotifications(updated);
   };
 
+  // Remembers what was cleared. Without that, the alert effect saw an empty drawer and regenerated
+  // today's alerts on the very next render, unread.
   const handleClearAllNotifs = () => {
+    const cleared = new Set(dismissedNotificationIds);
+    notifications.forEach((n) => cleared.add(n.id));
+    const dismissed = [...cleared].slice(-MAX_DISMISSED_NOTIFICATIONS);
+    setDismissedNotificationIds(dismissed);
+    StorageService.saveDismissedNotificationIds(dismissed);
     setNotifications([]);
     StorageService.saveNotifications([]);
   };
@@ -306,12 +342,14 @@ export default function App() {
         )}
 
         {activeTab === 'heatmap' && (
-          <PollenHeatmapView
-            userProfile={userProfile}
-            onUpdateLocation={(location) => {
-              handleUpdateProfile({ ...userProfile, location });
-            }}
-          />
+          <LazyView label="the pollen map">
+            <PollenHeatmapView
+              userProfile={userProfile}
+              onUpdateLocation={(location) => {
+                handleUpdateProfile({ ...userProfile, location });
+              }}
+            />
+          </LazyView>
         )}
 
         {activeTab === 'scan' && (
@@ -331,11 +369,13 @@ export default function App() {
         )}
 
         {activeTab === 'history' && (
-          <HistoryView
-            symptomLogs={symptomLogs}
-            onAddSymptomLog={handleAddSymptomLog}
-            onDeleteSymptomLog={handleDeleteSymptomLog}
-          />
+          <LazyView label="your symptom journal">
+            <HistoryView
+              symptomLogs={symptomLogs}
+              onAddSymptomLog={handleAddSymptomLog}
+              onDeleteSymptomLog={handleDeleteSymptomLog}
+            />
+          </LazyView>
         )}
 
         {activeTab === 'profile' && (

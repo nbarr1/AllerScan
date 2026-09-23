@@ -38,11 +38,43 @@ export interface UserAllergenProfile {
   onboarded: boolean;
 }
 
+export type RiskLevel = 'Low' | 'Moderate' | 'High' | 'Very High';
+
 export interface PollenCategoryScore {
-  level: 'Low' | 'Moderate' | 'High' | 'Very High';
-  value: number; // 0 - 100
-  trend: 'rising' | 'stable' | 'falling';
+  // Both null when no source reported this category for the location. That's "no reading", not
+  // a reading of zero, and the UI says so instead of printing 0/100.
+  level: RiskLevel | null;
+  value: number | null; // 0 - 100
+  // Today's forecast peak compared with tomorrow's. Absent when there's no forecast to compare —
+  // it used to be derived from today's value alone, which isn't a trend.
+  trend?: 'rising' | 'stable' | 'falling';
   topSpecies: string[];
+  // Present when the figure is an estimate rather than a reading, naming how it was estimated.
+  // Mold always carries one: no source measures outdoor mold directly.
+  estimateNote?: string;
+}
+
+// How a risk score was weighted. 'profile' means by the user's saved allergens; 'general' means
+// none of them could be scored (none saved, indoor-only, or no reading for their category), so
+// the score is the plain average of the outdoor categories instead.
+export type ScoreBasis = 'profile' | 'general';
+
+export interface MatchedAllergen {
+  id: string;
+  name: string;
+  category: AllergenCategory;
+  userSeverity: SeverityLevel;
+  currentLevel: RiskLevel;
+  currentValue: number;
+}
+
+// A saved allergen that isn't part of the score, and why: outdoor data says nothing about dust
+// mites or pet dander, and a category with no reading can't be scored.
+export interface UnscoredAllergen {
+  id: string;
+  name: string;
+  category: AllergenCategory;
+  reason: 'indoor' | 'no-reading';
 }
 
 export interface AirQualityData {
@@ -53,15 +85,18 @@ export interface AirQualityData {
   ozone: number;
 }
 
+// One day of a real pollen forecast (Google Pollen API or Open-Meteo's pollen model). There is no
+// mold forecast, because nothing forecasts it.
 export interface DailyPollenForecast {
   dayName: string;
   date: string;
-  riskLevel: 'Low' | 'Moderate' | 'High' | 'Very High';
-  overallScore: number; // 0 - 100
-  tree: number;
-  grass: number;
-  weed: number;
-  mold: number;
+  riskLevel: RiskLevel;
+  overallScore: number; // 0 - 100, scored the same way as today's headline score
+  basis: ScoreBasis;
+  tree: number | null;
+  grass: number | null;
+  weed: number | null;
+  // The user's own saved allergen in the day's highest category, or the category itself.
   dominantAllergen: string;
 }
 
@@ -94,7 +129,8 @@ export interface EnvironmentalData {
   pollenIsModeled?: boolean;
   weather?: LiveWeatherData;
   overallPersonalRiskScore: number; // 0 - 100
-  riskCategory: 'Low' | 'Moderate' | 'High' | 'Very High';
+  riskCategory: RiskLevel;
+  scoreBasis: ScoreBasis;
   // Absent when no live air-quality reading was available. The offline estimate omits it rather
   // than deriving a plausible-looking AQI from coordinates.
   aqi?: AirQualityData;
@@ -104,16 +140,13 @@ export interface EnvironmentalData {
     weed: PollenCategoryScore;
     mold: PollenCategoryScore;
   };
-  matchedActiveAllergens: Array<{
-    id: string;
-    name: string;
-    category: AllergenCategory;
-    userSeverity: SeverityLevel;
-    currentLevel: 'Low' | 'Moderate' | 'High' | 'Very High';
-    currentValue: number;
-  }>;
+  matchedActiveAllergens: MatchedAllergen[];
+  unscoredAllergens: UnscoredAllergen[];
   recommendations: string[];
+  // Empty when no live source forecasts pollen for this location. The dashboard says so rather
+  // than extrapolating today's figure.
   forecast: DailyPollenForecast[];
+  forecastSource?: string;
 }
 
 export interface ScanResult {
@@ -136,7 +169,12 @@ export interface ScanResult {
   // inventing generic botanical filler.
   identifyingFeatures: string[];
   locationStr: string;
-  isSimulatedResult?: boolean; // true when Gemini vision was unavailable and a fallback example was returned instead of real analysis
+  // Legacy: older builds saved a canned example here when Gemini was unavailable. Nothing sets it
+  // any more, but existing histories still carry it, so the history list keeps labelling them.
+  isSimulatedResult?: boolean;
+  // A preset sample shown from its reference data because AI analysis wasn't available. Shown on
+  // the result card, never saved to history.
+  isReferenceSample?: boolean;
 }
 
 export interface ShotLog {
@@ -206,15 +244,19 @@ export interface PollenHotspot {
   type: 'park' | 'urban' | 'botanical' | 'suburban' | 'greenbelt' | 'sensor_station';
   lat: number;
   lng: number;
-  overallRisk: 'Low' | 'Moderate' | 'High' | 'Very High';
-  overallScore: number; // 0 - 100
+  overallRisk: RiskLevel;
+  overallScore: number; // 0 - 100, the dominant pollen category's index
   // Real grains/m3 reading, only present when a live sensor actually reported one for the
   // dominant category at this exact point — never a computed/illustrative estimate.
   pollenCountGrains?: number;
-  treePollen: number;
-  grassPollen: number;
-  weedPollen: number;
-  moldCount: number;
+  // Null when the source had no reading for that category at this point.
+  treePollen: number | null;
+  grassPollen: number | null;
+  weedPollen: number | null;
+  // Always an estimate (see `moldNote`), and the same humidity-driven figure at every pin when live
+  // weather is available, so it never decides which category is "highest here".
+  moldCount: number | null;
+  moldNote: string;
   // Omitted when the live weather/air-quality feed didn't answer for this area. Absent is
   // honest; a default 75 °F reads as a measurement.
   aqi?: number;
@@ -222,7 +264,7 @@ export interface PollenHotspot {
   // sources report a category index, not per-point species. The UI must present it as a
   // category-level label, and name `matchedUserAllergen` when calling something a match.
   dominantSpecies: string;
-  dominantCategory: AllergenCategory;
+  dominantCategory: 'tree' | 'grass' | 'weed';
   // Where this location's pollen reading actually came from (e.g. "Live Google Maps Pollen
   // API", "Live Open-Meteo Pollen Sensors", or a clearly-labeled seasonal model as last resort).
   dataSource: string;

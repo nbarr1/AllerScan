@@ -38,6 +38,7 @@ import {
 } from 'lucide-react';
 import { PollenHotspot, UserAllergenProfile } from '../types';
 import { riskLevelForScore, themeForLevel, themeForScore } from '../utils/severity';
+import { coarseCoordinate } from '../utils/coords';
 
 interface ProfileLocation {
   cityName: string;
@@ -59,6 +60,13 @@ const GOOGLE_MAPS_API_KEY =
   '';
 
 const hasValidKey = Boolean(GOOGLE_MAPS_API_KEY) && GOOGLE_MAPS_API_KEY !== 'YOUR_API_KEY';
+
+// Advanced Markers need a Map ID. DEMO_MAP_ID is Google's placeholder for trying things out; a
+// deployment should create its own in the Cloud console and set GOOGLE_MAPS_MAP_ID, which the
+// server injects at request time alongside the key.
+const GOOGLE_MAPS_MAP_ID: string = (globalThis as any).GOOGLE_MAPS_MAP_ID || 'DEMO_MAP_ID';
+
+const DEFAULT_CENTER = { lat: 30.2672, lng: -97.7431 };
 
 /** Metres between two coordinates (haversine). Used to score routes against hotspots. */
 function distanceMeters(a: google.maps.LatLngLiteral, b: google.maps.LatLngLiteral): number {
@@ -318,7 +326,9 @@ export const PollenHeatmapView: React.FC<PollenHeatmapViewProps> = ({
   const [fetchError, setFetchError] = useState<string | null>(null);
 
   // Filters & Modes
-  const [activeCategoryFilter, setActiveCategoryFilter] = useState<'all' | 'tree' | 'grass' | 'weed' | 'mold'>('all');
+  // No mold layer: mold is an estimate, the same at every pin when live humidity is available, so it
+  // never decides which category is highest at a place.
+  const [activeCategoryFilter, setActiveCategoryFilter] = useState<'all' | 'tree' | 'grass' | 'weed'>('all');
   const [placeDiscoveryType, setPlaceDiscoveryType] = useState<'sanctuaries' | 'pharmacies' | 'none'>('none');
   const [discoveredPlaces, setDiscoveredPlaces] = useState<google.maps.places.Place[]>([]);
   const [placesError, setPlacesError] = useState<string | null>(null);
@@ -340,10 +350,12 @@ export const PollenHeatmapView: React.FC<PollenHeatmapViewProps> = ({
 
   // The map follows the profile's location. Keeping one source of truth means a city change made
   // in the header can't leave the map querying the new city's name with the old coordinates.
+  // Finite-number checks, not `||`: 0 is a valid latitude and longitude, and `||` moved anyone on
+  // the equator or the prime meridian to Austin (the server fixed the same bug on its side).
   const currentCoords = useMemo(
     () => ({
-      lat: userProfile.location.lat || 30.2672,
-      lng: userProfile.location.lng || -97.7431,
+      lat: Number.isFinite(userProfile.location.lat) ? userProfile.location.lat : DEFAULT_CENTER.lat,
+      lng: Number.isFinite(userProfile.location.lng) ? userProfile.location.lng : DEFAULT_CENTER.lng,
     }),
     [userProfile.location.lat, userProfile.location.lng]
   );
@@ -366,11 +378,20 @@ export const PollenHeatmapView: React.FC<PollenHeatmapViewProps> = ({
     const timer = setTimeout(() => controller.abort(), 12000);
 
     try {
-      const algsJson = encodeURIComponent(JSON.stringify(userProfile.allergens));
-      const res = await fetch(
-        `/api/pollen-hotspots?lat=${lat}&lng=${lng}&locationName=${encodeURIComponent(locName)}&userAllergens=${algsJson}`,
-        { signal: controller.signal }
-      );
+      // A POST body, and coordinates rounded to ~1 km: the profile and exact position used to go in
+      // the query string, which ends up in hosting request logs.
+      const res = await fetch('/api/pollen-hotspots', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          lat: coarseCoordinate(lat),
+          lng: coarseCoordinate(lng),
+          locationName: locName,
+          userAllergens: userProfile.allergens,
+          customAllergens: userProfile.customAllergens,
+        }),
+        signal: controller.signal,
+      });
       if (!res.ok) throw new Error(`Server returned ${res.status}`);
 
       const data = await res.json();
@@ -400,7 +421,7 @@ export const PollenHeatmapView: React.FC<PollenHeatmapViewProps> = ({
       clearTimeout(timer);
       if (requestId === hotspotRequestId.current) setIsLoading(false);
     }
-  }, [userProfile.allergens]);
+  }, [userProfile.allergens, userProfile.customAllergens]);
 
   // The effect is the only thing that fetches. Callers change the coordinates and let it run,
   // rather than each also firing its own duplicate request.
@@ -476,7 +497,9 @@ export const PollenHeatmapView: React.FC<PollenHeatmapViewProps> = ({
         let cityName = 'My location';
         let region = '';
         try {
-          const res = await fetch(`/api/reverse-geocode?lat=${lat}&lng=${lng}`);
+          const res = await fetch(
+            `/api/reverse-geocode?lat=${coarseCoordinate(lat)}&lng=${coarseCoordinate(lng)}`
+          );
           if (res.ok) {
             const place = await res.json();
             if (place?.cityName) {
@@ -559,7 +582,6 @@ export const PollenHeatmapView: React.FC<PollenHeatmapViewProps> = ({
     { key: 'tree', label: 'Trees', Icon: Trees },
     { key: 'grass', label: 'Grasses', Icon: Wheat },
     { key: 'weed', label: 'Weeds', Icon: Flower2 },
-    { key: 'mold', label: 'Molds', Icon: Biohazard },
   ];
 
   // -------------------------------------------------------------
@@ -867,7 +889,7 @@ export const PollenHeatmapView: React.FC<PollenHeatmapViewProps> = ({
               <Map
                 defaultCenter={currentCoords}
                 defaultZoom={12}
-                mapId="DEMO_MAP_ID"
+                mapId={GOOGLE_MAPS_MAP_ID}
                 internalUsageAttributionIds={['gmp_mcp_codeassist_v1_aistudio']}
                 style={{ width: '100%', height: '100%' }}
                 gestureHandling="greedy"
@@ -887,7 +909,6 @@ export const PollenHeatmapView: React.FC<PollenHeatmapViewProps> = ({
                   let glyphText = '🌲';
                   if (hs.dominantCategory === 'grass') glyphText = '🌾';
                   else if (hs.dominantCategory === 'weed') glyphText = '🌼';
-                  else if (hs.dominantCategory === 'mold') glyphText = '🍄';
 
                   return (
                     <AdvancedMarker
@@ -1151,23 +1172,34 @@ export const PollenHeatmapView: React.FC<PollenHeatmapViewProps> = ({
                       { label: 'Tree pollen', value: selectedHotspot.treePollen, Icon: Trees, iconClass: 'text-emerald-600' },
                       { label: 'Grass pollen', value: selectedHotspot.grassPollen, Icon: Wheat, iconClass: 'text-amber-500' },
                       { label: 'Weed pollen', value: selectedHotspot.weedPollen, Icon: Flower2, iconClass: 'text-rose-500' },
-                      { label: 'Mold spores', value: selectedHotspot.moldCount, Icon: Biohazard, iconClass: 'text-purple-500' },
-                    ]).map(({ label, value, Icon, iconClass }) => (
-                      <div key={label}>
-                        <div className="flex justify-between items-center text-slate-600 pt-1">
-                          <span className="flex items-center gap-1.5">
-                            <Icon className={`w-3.5 h-3.5 ${iconClass}`} aria-hidden="true" /> {label}
-                          </span>
-                          <span className="font-bold">{value}/100</span>
+                      {
+                        label: 'Mold spores',
+                        value: selectedHotspot.moldCount,
+                        Icon: Biohazard,
+                        iconClass: 'text-purple-500',
+                        note: selectedHotspot.moldNote || 'Estimate',
+                      },
+                    ] as Array<{ label: string; value: number | null; Icon: React.ElementType; iconClass: string; note?: string }>).map(
+                      ({ label, value, Icon, iconClass, note }) => (
+                        <div key={label}>
+                          <div className="flex justify-between items-center text-slate-600 pt-1">
+                            <span className="flex items-center gap-1.5">
+                              <Icon className={`w-3.5 h-3.5 ${iconClass}`} aria-hidden="true" /> {label}
+                              {note && <span className="text-[10px] font-semibold text-amber-700">({note.toLowerCase()})</span>}
+                            </span>
+                            <span className="font-bold">{value === null ? 'Not reported' : `${value}/100`}</span>
+                          </div>
+                          {value !== null && (
+                            <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
+                              <div
+                                className={`h-full rounded-full ${themeForScore(value).bar}`}
+                                style={{ width: `${Math.min(100, Math.max(0, value))}%` }}
+                              />
+                            </div>
+                          )}
                         </div>
-                        <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
-                          <div
-                            className={`h-full rounded-full ${themeForScore(value).bar}`}
-                            style={{ width: `${Math.min(100, Math.max(0, value))}%` }}
-                          />
-                        </div>
-                      </div>
-                    ))}
+                      )
+                    )}
                   </div>
                 </div>
 

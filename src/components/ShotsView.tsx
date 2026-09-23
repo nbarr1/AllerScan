@@ -70,10 +70,17 @@ export const ShotsView: React.FC<ShotsViewProps> = ({ schedule, onUpdateSchedule
     daysSinceLast !== null && schedule.intervalDays > 0 ? daysSinceLast - schedule.intervalDays : null;
   const showIntervalWarning = intervalOverdueBy !== null && intervalOverdueBy > 0;
 
+  // "Alternating" means the arm not used for the last dose. It used to pre-select the left arm
+  // every time, so the rotation setting did nothing.
+  const suggestedArm = (): LogFormState['arm'] => {
+    if (schedule.defaultArm === 'Left Arm' || schedule.defaultArm === 'Right Arm') return schedule.defaultArm;
+    return lastShot?.arm === 'Left Arm' ? 'Right Arm' : 'Left Arm';
+  };
+
   const openLogModal = (date: string) => {
     setLogForm({
       date,
-      arm: schedule.defaultArm === 'Right Arm' ? 'Right Arm' : 'Left Arm',
+      arm: suggestedArm(),
       dosage: '',
       reaction: 'None',
       notes: '',
@@ -147,10 +154,23 @@ export const ShotsView: React.FC<ShotsViewProps> = ({ schedule, onUpdateSchedule
   };
 
   const handleDeleteShot = (log: ShotLog) => {
-    onUpdateSchedule({
-      ...schedule,
-      shotHistory: schedule.shotHistory.filter((entry) => entry.id !== log.id),
-    });
+    const remaining = schedule.shotHistory.filter((entry) => entry.id !== log.id);
+
+    // Logging the latest dose sets the next appointment to its date plus the interval. Deleting that
+    // dose used to leave the countdown pointing at a date derived from a shot that no longer
+    // exists, so roll it back to the new latest dose. A date that doesn't match — one set by hand
+    // in Configure Regimen, or under a different interval — is left alone.
+    let nextShotDate = schedule.nextShotDate;
+    const derivedFromThisShot =
+      lastShot?.id === log.id && schedule.nextShotDate === addDaysToKey(log.date, schedule.intervalDays);
+    if (derivedFromThisShot) {
+      const newLatest = remaining
+        .filter((entry) => entry.completed)
+        .sort((a, b) => b.date.localeCompare(a.date))[0];
+      nextShotDate = newLatest ? addDaysToKey(newLatest.date, schedule.intervalDays) : '';
+    }
+
+    onUpdateSchedule({ ...schedule, shotHistory: remaining, nextShotDate });
     setPendingDelete(null);
   };
 
