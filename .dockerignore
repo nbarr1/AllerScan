@@ -2,6 +2,7 @@ node_modules
 dist
 android
 ios
+android-native
 .git
 .github
 .husky
