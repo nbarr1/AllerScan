@@ -79,7 +79,12 @@ export function buildEnvironmentalReport(input: ReportInput): EnvironmentalData 
       level: value === null ? null : riskLevelForScore(value),
       value,
       trend: isPollen ? trendFor(category) : undefined,
-      topSpecies: (isPollen ? input.topSpecies?.[category] : undefined) ?? DEFAULT_TOP_SPECIES[category],
+      // No reading means nothing to name: listing the regional defaults under "Not reported" would
+      // read as those plants being present.
+      topSpecies:
+        value === null
+          ? []
+          : (isPollen ? input.topSpecies?.[category] : undefined) ?? DEFAULT_TOP_SPECIES[category],
       estimateNote: !isPollen ? input.moldNote : input.pollenIsModeled ? 'Seasonal estimate' : undefined,
     };
   };

@@ -53,7 +53,7 @@ describe('buildEnvironmentalReport', () => {
 
   it('reports a missing category as null and labels mold as an estimate', () => {
     const report = buildEnvironmentalReport(input({ values: { tree: null, grass: 60, weed: 10, mold: 30 } }));
-    expect(report.pollen.tree).toMatchObject({ value: null, level: null });
+    expect(report.pollen.tree).toMatchObject({ value: null, level: null, topSpecies: [] });
     expect(report.pollen.mold.estimateNote).toBe('Estimated from live humidity and temperature');
     expect(report.pollen.grass.estimateNote).toBeUndefined();
   });
