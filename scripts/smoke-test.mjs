@@ -30,7 +30,10 @@ const base = `http://127.0.0.1:${port}`;
 
 // Keys are cleared so the checks behave the same on any machine: no request here should reach
 // Gemini, Google or Open-Meteo.
-const env = { ...process.env, NODE_ENV: "production", PORT: String(port), VERCEL: "" };
+// NODE_ENV is deliberately left unset, as `npm start` leaves it: the bundle has to run as the
+// production server on its own rather than quietly starting Vite's dev middleware.
+const env = { ...process.env, PORT: String(port), VERCEL: "" };
+delete env.NODE_ENV;
 for (const key of ["GEMINI_API_KEY", "GOOGLE_MAPS_PLATFORM_KEY", "GOOGLE_PLACES_SERVER_KEY", "GOOGLE_POLLEN_API_KEY"]) {
   env[key] = "";
 }
@@ -86,6 +89,15 @@ try {
   const manifest = await fetch(`${base}/manifest.json`);
   check("static files are served", manifest.status === 200, `status ${manifest.status}`);
 
+  const health = await fetch(`${base}/api/health`);
+  const healthBody = await health.json().catch(() => null);
+  check("GET /api/health reports ok", health.status === 200 && healthBody?.status === "ok", `status ${health.status}`);
+
+  // `?q=a&q=b` arrives as an array; it used to throw a 500. Blank queries answer from the static
+  // city list, so this makes no upstream call.
+  const arrayQuery = await fetch(`${base}/api/location-search?q=&q=`);
+  check("location search tolerates a repeated q", arrayQuery.status === 200, `status ${arrayQuery.status}`);
+
   const missing = await fetch(`${base}/api/does-not-exist`);
   const missingBody = await missing.json().catch(() => null);
   check("unknown API routes are JSON 404s", missing.status === 404 && typeof missingBody?.error === "string", `status ${missing.status}`);
@@ -104,10 +116,18 @@ try {
     scan.status === 503 && scanBody?.code === "vision_unconfigured",
     `status ${scan.status}`
   );
+
+  // Container platforms stop instances with SIGTERM; the server should close and exit cleanly.
+  if (exited === null) {
+    const exitCode = new Promise((resolve) => server.once("exit", (code) => resolve(code)));
+    server.kill("SIGTERM");
+    const code = await Promise.race([exitCode, new Promise((r) => setTimeout(() => r("timeout"), 10000))]);
+    check("SIGTERM shuts the server down cleanly", code === 0, `exit ${code}`);
+  }
 } catch (err) {
   if (!failures.length) failures.push(String(err));
 } finally {
-  server.kill();
+  if (exited === null) server.kill();
 }
 
 if (failures.length > 0) {

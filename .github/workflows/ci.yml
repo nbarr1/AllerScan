@@ -12,11 +12,16 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The lowest version package.json's "engines" allows, and the one the Docker image runs.
+        node-version: [22, 24]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ matrix.node-version }}
           cache: npm
       - run: npm ci
       - run: npm run lint
@@ -25,3 +30,5 @@ jobs:
       # Starts the production bundle and requests a few pages. Lint and build both passed while the
       # production server crashed on startup, because nothing ran it.
       - run: npm run test:smoke
+      # Fails on high or critical advisories in what the server actually installs in production.
+      - run: npm audit --omit=dev --audit-level=high

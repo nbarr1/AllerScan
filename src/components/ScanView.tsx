@@ -13,7 +13,8 @@ import {
 } from 'lucide-react';
 import { MASTER_ALLERGENS } from '../data/allergensDatabase';
 import { SCAN_PRESET_SAMPLES, ScanPresetSample } from '../data/sampleScans';
-import { ScanResult, UserAllergenProfile, AllergenCategory } from '../types';
+import { ScanResult, UserAllergenProfile } from '../types';
+import { isAllergenCategory } from '../utils/riskScore';
 import { isSafeObjectKey } from '../utils/safeKeys';
 
 interface ScanViewProps {
@@ -42,6 +43,9 @@ const MAX_UPLOAD_DATA_URL_LENGTH = 3_500_000;
 
 /** What the file picker accepts before resizing. The resized copy is what's sent. */
 const MAX_UPLOAD_BYTES = 15 * 1024 * 1024;
+
+/** How long to wait for /api/scan; see the comment at the request. */
+const SCAN_REQUEST_TIMEOUT_MS = 50_000;
 
 /** An error whose message is already written for the person using the app. */
 class ScanError extends Error {}
@@ -247,10 +251,18 @@ export const ScanView: React.FC<ScanViewProps> = ({
         payload = { imageUrl: imgData };
       }
 
+      // The server gives each vision call 20 s and may try two, so this is the outer limit. Without
+      // it a connection that never answered left the scanner spinning with no way out.
       const resp = await fetch('/api/scan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(SCAN_REQUEST_TIMEOUT_MS),
+      }).catch((err: unknown) => {
+        if (err instanceof DOMException && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
+          throw new ScanError('The scan took too long to come back. Check your connection and try again.');
+        }
+        throw err;
       });
 
       let resData: any = null;
@@ -296,8 +308,8 @@ export const ScanView: React.FC<ScanViewProps> = ({
         timestamp: new Date().toISOString(),
         imageUrl: storedImage,
         speciesName: scanData.speciesName,
-        scientificName: scanData.scientificName || '',
-        category: (scanData.category as AllergenCategory) || 'non_allergen',
+        scientificName: typeof scanData.scientificName === 'string' ? scanData.scientificName : '',
+        category: isAllergenCategory(scanData.category) ? scanData.category : 'non_allergen',
         confidence:
           typeof scanData.confidence === 'number' && Number.isFinite(scanData.confidence)
             ? scanData.confidence
@@ -305,8 +317,10 @@ export const ScanView: React.FC<ScanViewProps> = ({
         isUserAllergen,
         matchedAllergenId: matchedId,
         userSeverity,
-        details: scanData.details || '',
-        identifyingFeatures: Array.isArray(scanData.identifyingFeatures) ? scanData.identifyingFeatures : [],
+        details: typeof scanData.details === 'string' ? scanData.details : '',
+        identifyingFeatures: Array.isArray(scanData.identifyingFeatures)
+          ? scanData.identifyingFeatures.filter((feature: unknown): feature is string => typeof feature === 'string')
+          : [],
         locationStr: [userProfile.location.cityName, userProfile.location.region.split(',')[0]]
           .filter(Boolean)
           .join(', '),
