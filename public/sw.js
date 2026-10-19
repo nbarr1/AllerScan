@@ -70,8 +70,13 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(
       fetch(request)
         .then((response) => {
-          const copy = response.clone();
-          caches.open(SHELL_CACHE).then((cache) => cache.put(SHELL_URL, copy)).catch(() => undefined);
+          // Only a real page becomes the offline shell. Caching every answer meant one 503 from a
+          // deploy in progress replaced the working shell, and the app then opened offline to an
+          // error page.
+          if (response.ok && response.type === 'basic') {
+            const copy = response.clone();
+            caches.open(SHELL_CACHE).then((cache) => cache.put(SHELL_URL, copy)).catch(() => undefined);
+          }
           return response;
         })
         .catch(() =>

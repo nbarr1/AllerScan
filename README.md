@@ -26,6 +26,7 @@ AllerScan is a single Express server (`server.ts`) that both serves the Vite-bui
   - **Forecast:** built only from real forecast data: the Google Pollen API's daily forecast, or Open-Meteo's hourly pollen forecast (Europe only), taking each day's peak. Where neither covers a location, `forecast` is empty. Mold is always an estimate (from live humidity and temperature, or the seasonal model) and is labeled with `estimateNote`.
 - `GET /api/location-search` — worldwide city geocoding via Photon → Open-Meteo Geocoding → Nominatim → a static city list, in that order (multiple live tiers because the free Photon/Nominatim demo instances can throttle cloud/serverless IPs)
 - `GET /api/reverse-geocode` — coordinates to a place name (Photon → Nominatim), so "use my location" stores a real city rather than a placeholder label
+- `GET /api/health` — a liveness check for container platforms and uptime monitors. It calls no upstream service and isn't rate limited.
 - `POST /api/pollen-hotspots` — real nearby locations from the Google Places API, each with its own live per-point pollen reading from the same sources and parsing as the dashboard (Google Pollen API, or Open-Meteo pollen sensors if that key isn't set); returns an honest empty result instead of placeholder data if live sources are unavailable. `GET` also works.
 
 Upstream responses are cached in memory by rounded coordinate for a few minutes, so repeated
@@ -49,7 +50,7 @@ risk score — and navigations are network-first so the runtime-injected Maps ke
 
 ### Prerequisites
 
-- Node.js 20+
+- Node.js 22+ (the Docker image and CI use Node 24, the active LTS release)
 - Optional API keys (the app runs and degrades gracefully without any of them — see [Environment Variables](#environment-variables))
 
 ### Install & run
@@ -79,7 +80,7 @@ Copy `.env.example` to `.env` and fill in what you need; the server loads it at 
 
 | Variable | Required for | Notes |
 |---|---|---|
-| `GEMINI_API_KEY` | Real AI plant/mold scanning | Without it, `/api/scan` returns a labeled example result instead of analyzing your photo |
+| `GEMINI_API_KEY` | Real AI plant/mold scanning | Without it, `/api/scan` answers `503` with `code: "vision_unconfigured"` and the app says the photo wasn't analyzed. The sample photos then show their reference information, labeled as such |
 | `GOOGLE_MAPS_PLATFORM_KEY` | The Pollen Heatmap tab | Without it, that tab shows setup instructions instead of the map. Unlike the other keys, this one is a browser-facing Maps JS API key — see note below |
 | `GOOGLE_MAPS_MAP_ID` | A production Map ID for the Pollen Heatmap tab | Advanced Markers need a Map ID. Without one, the map uses Google's `DEMO_MAP_ID` placeholder. Injected at request time, like the Maps key |
 | `GOOGLE_PLACES_SERVER_KEY` | Real hotspot locations on the Pollen Heatmap tab | Server-to-server Places API (New) call from `/api/pollen-hotspots`. Without it, falls back to `GOOGLE_MAPS_PLATFORM_KEY` — see the referrer-restriction warning below, this is a common cause of 403s |
@@ -99,6 +100,13 @@ The rate limits in `server.ts` slow down abuse, but they're per instance and key
 address, so they aren't a hard cap. In the Google Cloud console, set a daily quota on each API
 these keys can call (Gemini, Places API (New), Pollen API, Maps JavaScript API, Routes API) and a
 budget alert on the project, so a leaked or hammered key has a bounded cost.
+
+### Running in production
+
+- `npm run build && npm start` runs the production server whether or not `NODE_ENV` is set; the bundle never starts Vite's dev middleware.
+- The Docker image runs as the unprivileged `node` user, checks `/api/health` with a `HEALTHCHECK`, and listens on `PORT` (8080 by default).
+- On `SIGTERM` or `SIGINT` the server stops accepting connections and lets open requests finish for up to 8 seconds before exiting, so a redeploy doesn't cut off a scan in progress.
+- Each Gemini call is limited to 20 seconds and each upstream data call to a few seconds, including reading the response body, so a stalled provider can't hold a request open.
 
 ## Testing on a device
 

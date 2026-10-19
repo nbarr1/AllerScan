@@ -147,6 +147,41 @@ export function loadStoredData<T>(key: string, fallback: T): T {
   return fallback;
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * A stored settings-style object, merged over its defaults. Storage outlives builds and can be
+ * edited by hand, so a value saved by an older version (missing a field added since), a literal
+ * `null`, or a field of the wrong type used to reach the views as-is and crash the first render —
+ * with no way back short of clearing site data. Top-level and nested fields the defaults define
+ * are restored when they're missing or have the wrong shape.
+ */
+export function loadStoredObject<T extends object>(key: string, fallback: T): T {
+  const stored = loadStoredData<unknown>(key, null);
+  if (!isPlainObject(stored)) return fallback;
+
+  const merged: Record<string, unknown> = { ...fallback, ...stored };
+  for (const [field, defaultValue] of Object.entries(fallback)) {
+    const value = stored[field];
+    if (isPlainObject(defaultValue)) {
+      merged[field] = isPlainObject(value) ? { ...defaultValue, ...value } : defaultValue;
+    } else if (Array.isArray(defaultValue)) {
+      merged[field] = Array.isArray(value) ? value : defaultValue;
+    } else if (defaultValue !== undefined && value !== undefined && typeof value !== typeof defaultValue) {
+      merged[field] = defaultValue;
+    }
+  }
+  return merged as T;
+}
+
+/** A stored list, keeping only entries that are objects; anything else falls back to `fallback`. */
+export function loadStoredList<T extends object>(key: string, fallback: T[]): T[] {
+  const stored = loadStoredData<unknown>(key, null);
+  return Array.isArray(stored) ? (stored.filter(isPlainObject) as T[]) : fallback;
+}
+
 /**
  * Returns false when the write didn't happen (quota exhausted, private-mode restrictions) so the
  * caller can tell the user rather than showing data as saved that will be gone on reload.
@@ -163,23 +198,23 @@ export function saveStoredData<T>(key: string, data: T): boolean {
 
 export const StorageService = {
   getProfile: () =>
-    deobfuscateProfileFromStorage(loadStoredData<UserAllergenProfile>(STORAGE_KEYS.PROFILE, DEFAULT_PROFILE)),
+    deobfuscateProfileFromStorage(loadStoredObject<UserAllergenProfile>(STORAGE_KEYS.PROFILE, DEFAULT_PROFILE)),
   saveProfile: (p: UserAllergenProfile) =>
     saveStoredData(STORAGE_KEYS.PROFILE, obfuscateProfileForStorage(p)),
 
-  getSchedule: () => loadStoredData<ImmunotherapySchedule>(STORAGE_KEYS.SCHEDULE, DEFAULT_SCHEDULE),
+  getSchedule: () => loadStoredObject<ImmunotherapySchedule>(STORAGE_KEYS.SCHEDULE, DEFAULT_SCHEDULE),
   saveSchedule: (s: ImmunotherapySchedule) => saveStoredData(STORAGE_KEYS.SCHEDULE, s),
 
-  getSymptoms: () => loadStoredData<SymptomLog[]>(STORAGE_KEYS.SYMPTOMS, INITIAL_SYMPTOMS),
+  getSymptoms: () => loadStoredList<SymptomLog>(STORAGE_KEYS.SYMPTOMS, INITIAL_SYMPTOMS),
   saveSymptoms: (s: SymptomLog[]) => saveStoredData(STORAGE_KEYS.SYMPTOMS, s),
 
-  getScans: () => loadStoredData<ScanResult[]>(STORAGE_KEYS.SCANS, INITIAL_SCANS),
+  getScans: () => loadStoredList<ScanResult>(STORAGE_KEYS.SCANS, INITIAL_SCANS),
   saveScans: (s: ScanResult[]) => saveStoredData(STORAGE_KEYS.SCANS, s.slice(0, MAX_STORED_SCANS)),
 
-  getSettings: () => loadStoredData<NotificationSettings>(STORAGE_KEYS.SETTINGS, DEFAULT_SETTINGS),
+  getSettings: () => loadStoredObject<NotificationSettings>(STORAGE_KEYS.SETTINGS, DEFAULT_SETTINGS),
   saveSettings: (s: NotificationSettings) => saveStoredData(STORAGE_KEYS.SETTINGS, s),
 
-  getNotifications: () => loadStoredData<AppNotification[]>(STORAGE_KEYS.NOTIFS, INITIAL_NOTIFICATIONS),
+  getNotifications: () => loadStoredList<AppNotification>(STORAGE_KEYS.NOTIFS, INITIAL_NOTIFICATIONS),
   saveNotifications: (n: AppNotification[]) =>
     saveStoredData(STORAGE_KEYS.NOTIFS, n.slice(0, MAX_NOTIFICATIONS)),
 

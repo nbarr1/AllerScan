@@ -9,3 +9,6 @@ android-native
 .claude
 *.log
 .env
+.env.*
+!.env.example
+coverage

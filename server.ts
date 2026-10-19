@@ -30,6 +30,7 @@ import {
 } from "./server/pollenSources.js";
 import { DEFAULT_LOCATION, readPollenRequest } from "./server/profileInput.js";
 import type { PollenRequest } from "./server/profileInput.js";
+import { normalizeScanResult } from "./server/scanResult.js";
 
 // Loads `.env` for local development. It was a dependency that nothing imported, so the README's
 // "copy .env.example to .env" step silently did nothing. Deployed environments set real variables,
@@ -56,13 +57,20 @@ function readTrustProxy(): number | boolean | string {
 app.set("trust proxy", readTrustProxy());
 
 // No CSP or X-Frame-Options yet: Google AI Studio previews this app in an iframe, and the Maps JS
-// API needs a long, version-dependent source list. These two are safe everywhere.
-app.use((_req, res, next) => {
+// API needs a long, version-dependent source list. These are safe everywhere. HSTS only goes out
+// over HTTPS (as seen through the trusted proxy), so a plain-HTTP local server never sends it.
+app.use((req, res, next) => {
   res.set({
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "strict-origin-when-cross-origin",
   });
+  if (req.secure) res.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
   next();
+});
+
+// Liveness for container platforms and uptime checks. Touches no upstream service and no quota.
+app.get("/api/health", (_req, res) => {
+  res.set("Cache-Control", "no-store").json({ status: "ok" });
 });
 
 // Injects the (public, referrer-restricted) Maps Platform key and Map ID into the served HTML at
@@ -138,6 +146,13 @@ function coordKey(lat: number, lng: number): string {
   return `${lat.toFixed(2)},${lng.toFixed(2)}`;
 }
 
+/**
+ * How long one Gemini call may take. The SDK has no default, so a stalled call used to hold the
+ * request open until the platform killed it. Two candidates at this limit still finish inside the
+ * app's own scan timeout.
+ */
+const GEMINI_TIMEOUT_MS = 20_000;
+
 // Initialize Google GenAI client lazily or safely
 function getGenAI() {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -148,6 +163,7 @@ function getGenAI() {
       headers: {
         "User-Agent": "aistudio-build",
       },
+      timeout: GEMINI_TIMEOUT_MS,
     },
   });
 }
@@ -200,13 +216,18 @@ app.post("/api/scan", async (req, res) => {
     if (!inlineImage && resolvedImageUrl) {
       const imgResp = await fetchWithTimeout(resolvedImageUrl, {}, 4000);
       const contentType = imgResp?.headers.get("content-type") || "";
-      if (!imgResp || !imgResp.ok || !contentType.startsWith("image/")) {
+      // The download can also stall or fail mid-body; that's the same "couldn't download" as a bad
+      // status, not a server fault.
+      const arrayBuffer =
+        imgResp && imgResp.ok && contentType.startsWith("image/")
+          ? await imgResp.arrayBuffer().catch(() => null)
+          : null;
+      if (!arrayBuffer) {
         return res.status(502).json({
           error: "Couldn't download that sample photo. Try again, or scan a photo of your own.",
           code: "image_unavailable",
         });
       }
-      const arrayBuffer = await imgResp.arrayBuffer();
       inlineImage = { data: Buffer.from(arrayBuffer).toString("base64"), mimeType: contentType };
     }
 
@@ -262,15 +283,23 @@ Respond strictly with valid JSON.`;
         });
 
         if (response.text) {
-          const parsed = JSON.parse(response.text);
-          if (parsed && typeof parsed === "object" && typeof parsed.speciesName === "string") {
-            return res.json({ success: true, source: modelName, data: parsed });
+          let parsed: unknown = null;
+          try {
+            parsed = JSON.parse(response.text);
+          } catch {
+            // Reported below like any other unusable answer.
           }
-          console.warn(`[Gemini API] ${modelName} returned JSON without a species name; trying the next candidate...`);
+          const data = normalizeScanResult(parsed);
+          if (data) {
+            return res.json({ success: true, source: modelName, data });
+          }
+          console.warn(`[Gemini API] ${modelName} returned no usable species name; trying the next candidate...`);
         }
       } catch (geminiErr: any) {
         const errMsg = geminiErr?.message || String(geminiErr);
         const isDemandSpike =
+          geminiErr?.name === "TimeoutError" ||
+          geminiErr?.name === "AbortError" ||
           errMsg.includes("503") ||
           errMsg.includes("high demand") ||
           errMsg.includes("UNAVAILABLE") ||
@@ -313,20 +342,18 @@ Respond strictly with valid JSON.`;
   }
 });
 
-// Helper with timeout to prevent hanging on external APIs
+// Helper with timeout to prevent hanging on external APIs. The deadline covers reading the body
+// too: the timer used to be cleared once headers arrived, so an upstream that sent headers and then
+// stalled held the request open with no limit. A body read past the deadline throws, and every
+// caller already treats a throw as "no data".
 async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs = 2500): Promise<Response | null> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(url, {
+    return await fetch(url, {
       ...options,
-      signal: controller.signal,
+      signal: AbortSignal.timeout(timeoutMs),
     });
-    return res;
   } catch {
     return null;
-  } finally {
-    clearTimeout(timer);
   }
 }
 
@@ -640,9 +667,13 @@ app.get("/api/pollen-aqi", handlePollenAqi);
 app.post("/api/pollen-aqi", handlePollenAqi);
 
 // 3. Location Search / Autocomplete endpoint using LIVE Photon Geocoder
+const MAX_LOCATION_QUERY_LENGTH = 120;
+
 app.get("/api/location-search", async (req, res) => {
-  const query = (req.query.q as string || "").trim();
-  
+  // `q` arrives as an array for `?q=a&q=b`, and calling .trim() on that threw a 500.
+  const rawQuery = req.query.q;
+  const query = (typeof rawQuery === "string" ? rawQuery : "").trim().slice(0, MAX_LOCATION_QUERY_LENGTH);
+
   if (!query) {
     return res.json(DEFAULT_CITY_OPTIONS);
   }
@@ -658,20 +689,27 @@ app.get("/api/location-search", async (req, res) => {
       const data = await resp.json();
       const features = data.features || [];
       if (features.length > 0) {
-        const results = features.map((f: any) => {
-          const p = f.properties || {};
-          const coords = f.geometry?.coordinates || [0, 0];
-          const cityName = p.name || p.city || p.town || p.village || query;
-          const regParts = [p.state || p.county, p.country].filter(Boolean);
-          const region = regParts.join(", ") || p.country || "Earth";
-          return {
-            cityName,
-            region,
-            lat: Number(coords[1].toFixed(5)),
-            lng: Number(coords[0].toFixed(5)),
-          };
-        });
-        return res.json(results);
+        // A feature without coordinates used to come back as a result at 0,0 (off the coast of
+        // Africa), which the app then saved as the user's location.
+        const results = features
+          .filter((f: any) => {
+            const coords = f?.geometry?.coordinates;
+            return Array.isArray(coords) && Number.isFinite(coords[0]) && Number.isFinite(coords[1]);
+          })
+          .map((f: any) => {
+            const p = f.properties || {};
+            const coords = f.geometry.coordinates;
+            const cityName = p.name || p.city || p.town || p.village || query;
+            const regParts = [p.state || p.county, p.country].filter(Boolean);
+            const region = regParts.join(", ") || p.country || "Earth";
+            return {
+              cityName,
+              region,
+              lat: Number(coords[1].toFixed(5)),
+              lng: Number(coords[0].toFixed(5)),
+            };
+          });
+        if (results.length > 0) return res.json(results);
       }
     }
   } catch (err) {
@@ -701,18 +739,20 @@ app.get("/api/location-search", async (req, res) => {
     if (nomResp && nomResp.ok) {
       const nomData = await nomResp.json();
       if (Array.isArray(nomData) && nomData.length > 0) {
-        const nomResults = nomData.map((item: any) => {
-          const addr = item.address || {};
-          const cityName = addr.city || addr.town || addr.village || addr.municipality || item.name || query;
-          const regParts = [addr.state || addr.county, addr.country].filter(Boolean);
-          return {
-            cityName,
-            region: regParts.join(", ") || addr.country || "Earth",
-            lat: parseFloat(item.lat),
-            lng: parseFloat(item.lon),
-          };
-        });
-        return res.json(nomResults);
+        const nomResults = nomData
+          .map((item: any) => {
+            const addr = item.address || {};
+            const cityName = addr.city || addr.town || addr.village || addr.municipality || item.name || query;
+            const regParts = [addr.state || addr.county, addr.country].filter(Boolean);
+            return {
+              cityName,
+              region: regParts.join(", ") || addr.country || "Earth",
+              lat: parseFloat(item.lat),
+              lng: parseFloat(item.lon),
+            };
+          })
+          .filter((r: any) => Number.isFinite(r.lat) && Number.isFinite(r.lng));
+        if (nomResults.length > 0) return res.json(nomResults);
       }
     }
   } catch (nomErr) {
@@ -731,8 +771,8 @@ app.get("/api/reverse-geocode", async (req, res) => {
   const lat = parseFloat(req.query.lat as string);
   const lng = parseFloat(req.query.lng as string);
 
-  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
-    return res.status(400).json({ error: "lat and lng are required." });
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+    return res.status(400).json({ error: "lat and lng are required, as a latitude (-90 to 90) and longitude (-180 to 180)." });
   }
 
   const cacheKey = `reverse:${coordKey(lat, lng)}`;
@@ -1190,9 +1230,29 @@ async function startServer() {
   // On Vercel, the platform's own runtime invokes the exported app per-request
   // (see api/index.ts) instead of listening on a port itself.
   if (!process.env.VERCEL) {
-    app.listen(PORT, "0.0.0.0", () => {
+    const server = app.listen(PORT, "0.0.0.0", () => {
       console.log(`AllerScan Express server running on http://0.0.0.0:${PORT}`);
     });
+
+    // Container platforms stop an instance with SIGTERM and wait a few seconds before killing it.
+    // Exiting on the signal dropped whatever was in flight (a scan can take several seconds); this
+    // stops accepting connections, lets open requests finish, and exits once they have or after
+    // SHUTDOWN_GRACE_MS, whichever comes first.
+    const SHUTDOWN_GRACE_MS = 8000;
+    let shuttingDown = false;
+    const shutDown = (signal: string) => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      console.log(`${signal} received; closing the server.`);
+      server.close(() => process.exit(0));
+      server.closeIdleConnections();
+      setTimeout(() => {
+        console.warn("Requests still open after the grace period; exiting anyway.");
+        process.exit(0);
+      }, SHUTDOWN_GRACE_MS).unref();
+    };
+    process.on("SIGTERM", () => shutDown("SIGTERM"));
+    process.on("SIGINT", () => shutDown("SIGINT"));
   }
 }
 
