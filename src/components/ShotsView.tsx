@@ -340,7 +340,7 @@ export const ShotsView: React.FC<ShotsViewProps> = ({ schedule, onUpdateSchedule
           <button
             type="button"
             onClick={() => openLogModal(toLocalDateKey())}
-            className="text-xs font-bold text-emerald-600 hover:text-emerald-700 flex items-center gap-1"
+            className="min-h-11 -my-3 -mr-2 px-2 shrink-0 text-xs font-bold text-emerald-700 hover:text-emerald-800 flex items-center gap-1"
           >
             <Plus className="w-3.5 h-3.5" aria-hidden="true" /> Log a shot
           </button>

@@ -396,7 +396,7 @@ export default function App() {
       </main>
 
       {/* Footer Disclaimer Bar */}
-      <footer className="mt-auto bg-white border-t border-slate-200/80 py-4 px-4 sm:px-6 text-center text-xs text-slate-500">
+      <footer className="mt-auto bg-white border-t border-slate-200/80 pt-4 pb-[calc(5rem+env(safe-area-inset-bottom))] md:pb-4 px-4 sm:px-6 text-center text-xs text-slate-500">
         <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2">
           <div className="flex items-center gap-1.5 text-slate-600">
             <ShieldAlert className="w-4 h-4 text-emerald-600 shrink-0" aria-hidden="true" />
