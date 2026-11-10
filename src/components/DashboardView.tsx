@@ -167,7 +167,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     onClick={onRefreshData}
                     disabled={isLoading}
                     aria-label="Refresh environmental data"
-                    className="p-1 hover:bg-slate-800 rounded-full text-slate-400 hover:text-emerald-400 transition-colors disabled:opacity-50"
+                    className="-m-3 w-11 h-11 flex items-center justify-center hover:bg-slate-800 rounded-full text-slate-400 hover:text-emerald-400 transition-colors disabled:opacity-50"
                   >
                     <RefreshCw className={`w-3 h-3 ${isLoading ? 'animate-spin text-emerald-400' : ''}`} aria-hidden="true" />
                   </button>
@@ -251,7 +251,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <button
               type="button"
               onClick={() => onNavigate('heatmap')}
-              className="w-full py-2.5 px-4 bg-orange-500 hover:bg-orange-400 text-slate-950 font-extrabold text-xs sm:text-sm rounded-2xl shadow-lg shadow-orange-500/20 transition-all flex items-center justify-center gap-2 group"
+              className="w-full min-h-11 py-2.5 px-4 bg-orange-500 hover:bg-orange-400 text-slate-950 font-extrabold text-xs sm:text-sm rounded-2xl shadow-lg shadow-orange-500/20 transition-all flex items-center justify-center gap-2 group"
             >
               <Map className="w-4 h-4 group-hover:scale-110 transition-transform" />
               <span>Explore Pollen Heatmap & Radar</span>
@@ -260,7 +260,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <button
               type="button"
               onClick={() => onNavigate('scan')}
-              className="w-full py-2.5 px-4 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-xs sm:text-sm rounded-2xl shadow-lg shadow-emerald-500/20 transition-all flex items-center justify-center gap-2 group"
+              className="w-full min-h-11 py-2.5 px-4 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-xs sm:text-sm rounded-2xl shadow-lg shadow-emerald-500/20 transition-all flex items-center justify-center gap-2 group"
             >
               <Camera className="w-4 h-4 group-hover:scale-110 transition-transform" />
               <span>Scan Plant or Mold with Camera</span>
@@ -269,7 +269,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <button
               type="button"
               onClick={() => onNavigate('shots')}
-              className="w-full py-2.5 px-4 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs rounded-2xl transition-all border border-slate-700 flex items-center justify-center gap-2"
+              className="w-full min-h-11 py-2.5 px-4 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs rounded-2xl transition-all border border-slate-700 flex items-center justify-center gap-2"
             >
               <Syringe className="w-4 h-4 text-amber-400" />
               <span>
@@ -336,9 +336,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             type="button"
             onClick={onRefreshData}
             disabled={isLoading}
-            className="text-xs font-semibold text-emerald-600 hover:text-emerald-700 disabled:text-slate-400 disabled:cursor-not-allowed"
+            className="min-h-11 -my-2.5 -mr-2 px-2 inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 hover:text-emerald-800 disabled:text-slate-500 disabled:cursor-not-allowed"
           >
-            {isLoading ? 'Refreshing…' : '↻ Refresh Data'}
+            <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} aria-hidden="true" />
+            {isLoading ? 'Refreshing…' : 'Refresh data'}
           </button>
         </div>
 
@@ -540,7 +541,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <button
               type="button"
               onClick={() => onNavigate('profile')}
-              className="font-bold text-emerald-600 hover:underline"
+              className="min-h-11 -my-3 -mr-2 px-2 shrink-0 inline-flex items-center font-bold text-emerald-700 hover:underline"
             >
               Edit Allergens →
             </button>

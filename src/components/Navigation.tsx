@@ -84,7 +84,7 @@ export const Navigation: React.FC<NavigationProps> = ({
       {/* Desktop / Tablet Sub-Header Bar */}
       <nav className="hidden md:block bg-slate-900 text-slate-100 shadow-md" aria-label="Main">
         <div className="max-w-7xl mx-auto px-4 flex items-center justify-between">
-          <div className="flex space-x-1">
+          <div className="flex space-x-1 overflow-x-auto">
             {TABS.map((tab) => {
               const Icon = tab.icon;
               const isActive = activeTab === tab.id;
@@ -95,14 +95,16 @@ export const Navigation: React.FC<NavigationProps> = ({
                   key={tab.id}
                   onClick={() => onTabChange(tab.id)}
                   aria-current={isActive ? 'page' : undefined}
-                  className={`relative flex items-center gap-2 px-4 py-3 text-sm font-medium transition-all border-b-2 ${
+                  className={`relative shrink-0 flex items-center gap-2 px-3 lg:px-4 py-3 text-sm font-medium transition-all border-b-2 ${
                     isActive
                       ? 'border-emerald-400 text-emerald-400 bg-slate-800/60'
                       : 'border-transparent text-slate-300 hover:text-white hover:bg-slate-800/30'
                   }`}
                 >
                   <Icon className={`w-4 h-4 ${tab.highlight ? 'text-emerald-400' : ''}`} aria-hidden="true" />
-                  <span>{tab.label}</span>
+                  {/* Seven full labels need ~820px; tablets get the short ones. */}
+                  <span className="lg:hidden">{tab.shortLabel}</span>
+                  <span className="hidden lg:inline">{tab.label}</span>
                   {badge !== undefined && (
                     <span className="ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-500 text-slate-900">
                       {badge}
